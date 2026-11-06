@@ -1,0 +1,5 @@
+/goraz
+*.test
+*.out
+/dist/
+.DS_Store
