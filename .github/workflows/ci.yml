@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install tools at fixed versions
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - name: Run checks
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          staticcheck ./...
+          gosec -quiet -exclude-generated -tests=false ./...
+          govulncheck ./...
+      - name: Build with Go secret mode
+        run: GOEXPERIMENT=runtimesecret go build ./...
+      - name: Check the reproducible build recipe
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o a ./cmd/goraz
+          CGO_ENABLED=0 go build -trimpath -o b ./cmd/goraz
+          cmp a b
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Run each fuzz target briefly
+        run: make fuzz FUZZTIME=20s
