@@ -50,9 +50,10 @@ jobs:
         run: GOEXPERIMENT=runtimesecret go build ./...
       - name: Check the reproducible build recipe
         run: |
-          CGO_ENABLED=0 go build -trimpath -o a ./cmd/goraz
-          CGO_ENABLED=0 go build -trimpath -o b ./cmd/goraz
-          cmp a b
+          # Outside the repository, because a new file would mark the next build as dirty.
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/a" ./cmd/goraz
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/b" ./cmd/goraz
+          cmp "$RUNNER_TEMP/a" "$RUNNER_TEMP/b"
 
   fuzz:
     runs-on: ubuntu-latest
