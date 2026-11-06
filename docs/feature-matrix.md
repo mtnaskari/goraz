@@ -1,3 +1,8 @@
+---
+title: goraz feature matrix
+description: Which features from Vault, SOPS, Bitwarden and other projects goraz includes, defers or rejects, and why.
+---
+
 # Feature matrix
 
 The goal is for goraz to eventually carry every good idea from earlier projects. Not all of them are realistic or safe in a first release, so this document records each decision, including the deferrals, rather than dropping anything silently.
@@ -121,8 +126,8 @@ The goal is for goraz to eventually carry every good idea from earlier projects.
 | `go vet`, staticcheck, gosec, govulncheck | Project requirement | v0.1 | |
 | `SECURITY.md` stating there has been no audit | Honest reporting | v0.1 | |
 | Static binaries, no install scripts | Bitwarden npm lesson | v0.1 | `CGO_ENABLED=0 -trimpath` |
-| Signed releases, GitHub attestations | KeeLoader, `slsa-github-generator` deprecation | When publishing | SLSA Build L2 through attestations, without the unmaintained generator |
-| OpenSSF Scorecard, Best Practices badge | OpenSSF | When publishing | |
+| Build attestations and checksums | KeeLoader, `slsa-github-generator` deprecation | v0.1 | GitHub attestations, without the unmaintained generator |
+| OpenSSF Scorecard, Best Practices badge | OpenSSF | Later | |
 | OSS-Fuzz | OSS-Fuzz | Later | Acceptance usually depends on adoption |
 | Independent cryptographic review | Bitwarden, KeePassXC, Almond | Later | ⚠ Needs funding or a volunteer reviewer. It can't be claimed until it has happened, and it matters more than most features |
 | SOC 2, FedRAMP and similar | Doppler, 1Password | Not planned | Organisational certifications, not applicable to a personal open-source project |

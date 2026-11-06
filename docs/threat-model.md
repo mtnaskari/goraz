@@ -1,8 +1,13 @@
+---
+title: goraz threat model
+description: What goraz defends against, what it does not, and the limits of its rollback detection, audit log and service mode.
+---
+
 # Threat model
 
-Status: draft for review. It applies to the first release (v0.1). It will change as features are added, and any new feature must update this document first.
+This applies to goraz 0.1. Any new feature must update this document first.
 
-goraz v0.1 is a local tool and Go library. It keeps secrets, tokens and passwords in one encrypted file, and it can give each production service its own smaller encrypted file. It has no server and no network use, other than one opt-in breach check.
+goraz 0.1 is a local tool and Go library. It keeps secrets, tokens and passwords in one encrypted file, and it can give each production service its own smaller encrypted file. It has no server and no network use, other than one opt-in breach check.
 
 ## 1. Assets
 

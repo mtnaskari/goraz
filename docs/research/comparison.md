@@ -1,3 +1,8 @@
+---
+title: Comparison of secret management projects
+description: Strengths, threat models, encryption design, licenses and security incidents of Vault, OpenBao, Infisical, SOPS, age, gopass, Bitwarden, KeePassXC and others.
+---
+
 # Comparison of existing secret-management projects
 
 Research date: 2026-11-06. This document records what `goraz` learned from earlier projects. It is a summary of published material, not an assessment of those projects' overall quality.

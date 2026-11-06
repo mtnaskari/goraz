@@ -1,6 +1,11 @@
+---
+title: goraz security design and file format
+description: The cryptography, key hierarchy, file format, token design and memory limits of goraz, written to serve as its format specification.
+---
+
 # Security design
 
-Status: draft for review. Nothing is implemented yet. This document is written to become the format specification, so it is deliberately precise. The threat model is in [threat-model.md](threat-model.md).
+This describes goraz 0.1, and it serves as the format specification, so it is deliberately precise. The threat model is in [threat-model.md](threat-model.md).
 
 ## 1. Principles
 

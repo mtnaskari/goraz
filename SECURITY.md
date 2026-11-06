@@ -2,7 +2,7 @@
 
 ## Status
 
-**goraz has not had an independent security audit.** Its design has been reviewed only by its authors, and its cryptographic composition (docs/security-design.md, section 4) has not been analysed by an outside party. It is pre-release software, with one maintainer.
+**goraz has not had an independent security audit.** Its cryptographic composition (docs/security-design.md, section 4) has not been analysed by an outside party. It is an early release, with one maintainer.
 
 Automated checks are not a substitute for review. Passing tests, fuzzing and static analysis show only the absence of the problems those tools can find.
 

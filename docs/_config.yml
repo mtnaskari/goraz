@@ -1,0 +1,14 @@
+title: goraz
+description: Encrypted secret, API token and password manager for Go services and the command line.
+url: https://mtnaskari.github.io
+baseurl: /goraz
+theme: jekyll-theme-primer
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: false
+author: Matin Askari
+lang: en
