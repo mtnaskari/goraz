@@ -869,6 +869,8 @@ func (v *Vault) commit(ev audit.Event, fn func(t *tx) error) error {
 		return err
 	}
 	defer lock.Release()
+	// A crash can leave a temporary copy, which holds old slots and old data.
+	fsutil.RemoveStaleTemps(v.path)
 
 	cur, err := fsutil.ReadFile(v.path, format.MaxFileSize, fsutil.Policy{})
 	if err != nil {

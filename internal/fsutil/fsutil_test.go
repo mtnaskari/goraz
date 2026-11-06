@@ -218,3 +218,23 @@ func TestReleaseIsSafeTwice(t *testing.T) {
 	var none *Lock
 	none.Release()
 }
+
+func TestRemoveStaleTemps(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "v")
+	write(t, p, 0o600)
+	stale := filepath.Join(dir, ".v.tmp-abc")
+	write(t, stale, 0o600)
+	other := filepath.Join(dir, ".other.tmp-abc")
+	write(t, other, 0o600)
+	RemoveStaleTemps(p)
+	if _, err := os.Stat(stale); err == nil {
+		t.Error("the stale file remains")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("removed another file's temporary")
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Error("removed the file itself")
+	}
+}

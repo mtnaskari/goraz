@@ -191,6 +191,18 @@ func AtomicWrite(path string, data []byte, hook Hook) (err error) {
 	return SyncDir(dir)
 }
 
+// RemoveStaleTemps deletes temporary files left beside path by a crash. It must be
+// called while holding the file's exclusive lock, so that no write is in progress.
+func RemoveStaleTemps(path string) {
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+}
+
 // SyncDir fsyncs a directory so that a rename survives a crash.
 func SyncDir(dir string) error {
 	d, err := os.Open(dir) // #nosec G304 -- the directory of a file goraz is writing.
