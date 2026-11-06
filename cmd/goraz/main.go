@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -77,6 +78,7 @@ Audit:
 
 Diagnostics:
   doctor                   report active protections and vault integrity
+  version                  print the version
 
 Common flags (after the command): --vault PATH, --passphrase-fd N, --keyfile PATH,
 --recovery, --machine-key-file PATH, --machine-key-fd N, --audit stderr,
@@ -117,7 +119,10 @@ func (a *app) run(args []string) int {
 		"slot": a.cmdSlot, "rekey": a.cmdRekey, "state": a.cmdState, "generate": a.cmdGenerate,
 		"totp": a.cmdTOTP, "clip": a.cmdClip, "report": a.cmdReport, "token": a.cmdToken,
 		"service": a.cmdService, "audit": a.cmdAudit, "doctor": a.cmdDoctor,
-		"__clipclear": a.cmdClipClear,
+		"__clipclear": a.cmdClipClear, "version": a.cmdVersion,
+	}
+	if cmd == "--version" {
+		cmd = "version"
 	}
 	if cmd == "help" || cmd == "-h" || cmd == "--help" {
 		_, _ = io.WriteString(a.stdout, usage)
@@ -1572,6 +1577,15 @@ func (a *app) cmdAudit(args []string) error {
 		return v.RotateAuditKey()
 	}
 	return fmt.Errorf("unknown audit command %q", sub)
+}
+
+func (a *app) cmdVersion([]string) error {
+	v := "(unknown)"
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		v = info.Main.Version
+	}
+	fmt.Fprintf(a.stdout, "goraz %s\n", v)
+	return nil
 }
 
 func yesNo(b bool) string {
