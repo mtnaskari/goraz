@@ -107,6 +107,10 @@ Argon2id, HKDF-SHA-256 and XChaCha20-Poly1305, from Go's standard library and `g
 
 *Goraz* evokes the Persian word for wild boar, and combines "Go" with the Persian word *raz*, meaning secret.
 
+## Author
+
+goraz is written and maintained by [Matin Askari](https://www.askari.pro) ([@mtnaskari](https://github.com/mtnaskari)).
+
 ## License
 
-[Apache-2.0](LICENSE). The embedded word list is from the [Electronic Frontier Foundation](https://www.eff.org/dice), under CC BY 3.0 US.
+Copyright 2026 Matin Askari. Licensed under [Apache-2.0](LICENSE). The embedded word list is from the [Electronic Frontier Foundation](https://www.eff.org/dice), under CC BY 3.0 US.
