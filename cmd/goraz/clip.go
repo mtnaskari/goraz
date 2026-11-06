@@ -24,17 +24,18 @@ type clipTool struct {
 	copyArgs, pasteArgs []string
 }
 
+var clipCandidates = []clipTool{
+	{[]string{"/usr/bin/pbcopy"}, []string{"/usr/bin/pbpaste"}},
+	{[]string{"/usr/bin/wl-copy"}, []string{"/usr/bin/wl-paste", "--no-newline"}},
+	{[]string{"/usr/bin/xclip", "-selection", "clipboard"}, []string{"/usr/bin/xclip", "-selection", "clipboard", "-o"}},
+}
+
 // Only fixed absolute paths are used, so a directory on PATH can't supply a fake
 // clipboard program that would receive the secret.
 func findClip() (*clipTool, error) {
-	candidates := []clipTool{
-		{[]string{"/usr/bin/pbcopy"}, []string{"/usr/bin/pbpaste"}},
-		{[]string{"/usr/bin/wl-copy"}, []string{"/usr/bin/wl-paste", "--no-newline"}},
-		{[]string{"/usr/bin/xclip", "-selection", "clipboard"}, []string{"/usr/bin/xclip", "-selection", "clipboard", "-o"}},
-	}
-	for i := range candidates {
-		if st, err := os.Stat(candidates[i].copyArgs[0]); err == nil && !st.IsDir() {
-			return &candidates[i], nil
+	for i := range clipCandidates {
+		if st, err := os.Stat(clipCandidates[i].copyArgs[0]); err == nil && !st.IsDir() {
+			return &clipCandidates[i], nil
 		}
 	}
 	return nil, errors.New("no clipboard program found (pbcopy, wl-copy or xclip)")
