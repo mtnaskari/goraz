@@ -1,26 +1,26 @@
-The first public release of goraz: an encrypted vault, API token manager and password manager for Go services and the command line. It needs no server.
+A security update that builds goraz with a Go release containing the fix for GO-2026-6859.
 
-**This is an early release, and goraz has not had an independent security audit.** Don't make it the only protection for highly sensitive credentials. Read [what it does not defend against](https://mtnaskari.github.io/goraz/threat-model#4-what-goraz-does-not-defend-against). The Go API and command-line flags may change before version 1. The v1 file format is frozen by golden tests.
+**goraz has not had an independent security audit.** Don't make it the only protection for highly sensitive credentials. Read [what it does not defend against](https://mtnaskari.github.io/goraz/threat-model#4-what-goraz-does-not-defend-against). The Go API and command-line flags may change before version 1. The v1 file format is unchanged.
 
-## Included
+## Changes
 
-- An encrypted vault with hidden metadata, version history and tamper and rollback detection
-- Per-service encrypted files, with reload, staleness limits and rotation without an outage
-- API token issuing, verifying, revoking and rotating, with only a keyed hash stored
-- Passwords, passphrases, TOTP and HOTP, automatic clipboard clearing and opt-in breach checks
-- A hash-chained audit log with no names or values
+- **Security:** release binaries are built with Go 1.27.4. GO-2026-6859 (CVE-2026-97054) is a header race in the `net/http` standard library package, which can crash an HTTP/1 server. goraz runs no HTTP server: its only use of `net/http` is the opt-in breach check, `goraz report --hibp`.
+- **Go version:** the module now requires Go 1.26.11 or later, so programs that import goraz also build with a fixed standard library.
+- **Documentation:** the site at [mtnaskari.github.io/goraz](https://mtnaskari.github.io/goraz/) has a new layout, and the README names the author.
+
+Vaults, service files and tokens from v0.1.0 work unchanged.
 
 ## Install
 
 ```bash
-go install github.com/mtnaskari/goraz/cmd/goraz@v0.1.0
+go install github.com/mtnaskari/goraz/cmd/goraz@v0.1.1
 ```
 
 Or download a binary below, then check it:
 
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS
-gh attestation verify goraz_v0.1.0_linux_amd64 --repo mtnaskari/goraz
+gh attestation verify goraz_v0.1.1_linux_amd64 --repo mtnaskari/goraz
 ```
 
 macOS and Linux only. [Start here](https://mtnaskari.github.io/goraz/guides/getting-started).
