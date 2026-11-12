@@ -16,7 +16,7 @@ The official source is `github.com/mtnaskari/goraz`. The `github.com/goraz` orga
 
 ## Install
 
-Requires Go 1.26 or later, on macOS or Linux.
+Requires Go 1.26.11 or later, on macOS or Linux.
 
 ```bash
 go install github.com/mtnaskari/goraz/cmd/goraz@latest

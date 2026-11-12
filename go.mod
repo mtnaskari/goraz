@@ -1,8 +1,8 @@
 module github.com/mtnaskari/goraz
 
-go 1.26.0
+go 1.26.11
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	golang.org/x/crypto v0.58.0

@@ -9,7 +9,7 @@ You will create an encrypted vault, store a secret and give it to a program.
 
 ## Install
 
-You need Go 1.26 or later, on macOS or Linux.
+You need Go 1.26.11 or later, on macOS or Linux.
 
 ```bash
 go install github.com/mtnaskari/goraz/cmd/goraz@latest
