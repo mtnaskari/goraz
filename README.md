@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
+  <img alt="goraz: encrypted secrets, API tokens and passwords for Go services and the command line" src="docs/assets/banner-light.png" width="100%">
+</picture>
+
 # goraz: encrypted secrets, API tokens and passwords for Go
 
 [![CI](https://github.com/mtnaskari/goraz/actions/workflows/ci.yml/badge.svg)](https://github.com/mtnaskari/goraz/actions/workflows/ci.yml)
