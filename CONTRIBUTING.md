@@ -17,6 +17,16 @@ make check
 
 That runs `gofmt`, `go vet`, `staticcheck`, `gosec`, `govulncheck` and `go test -race`. `make fuzz` runs each fuzz target briefly.
 
+## Documentation
+
+The guides live in `docs/` as Markdown, which reads well on GitHub. The site at [mtnaskari.github.io/goraz](https://mtnaskari.github.io/goraz/) is built from them by a small Node.js script in `site/`, and is deployed from `main`. That tooling has its own `package.json` and is not part of the Go module, so it adds no dependency to goraz itself.
+
+```bash
+cd site && npm ci && npm run build   # writes _site/
+```
+
+A new page must be added to the navigation in `site/build.mjs`.
+
 ## Commits
 
 - **Atomic commits.** One clear purpose per commit. Avoid both very large commits and a flood of one-file commits that only make sense together.
