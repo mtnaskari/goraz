@@ -1,0 +1,110 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - govet
+    - staticcheck            # includes former gosimple/stylecheck in v2
+    - errcheck
+    - ineffassign
+    - unused
+    - errorlint              # %w and errors.Is/As instead of == and type switches
+    - nilnesserr             # returns nil error after checking a non-nil one
+    - bodyclose              # password/hibp.go HTTP response
+    - noctx                  # HTTP and exec without context
+    - durationcheck
+    - musttag                # JSON-encoded structs (manifest, records, events) have tags
+    - forcetypeassert
+    # Security
+    - gosec                  # replaces the standalone gosec step
+    - bidichk                # Trojan Source (bidirectional control characters)
+    - depguard
+    - forbidigo
+    # Hygiene
+    - nolintlint
+    - gocheckcompilerdirectives
+    - errname
+    - perfsprint
+    - unconvert
+    - usestdlibvars
+    - modernize
+    - misspell
+    - revive
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment     # churn, no safety value
+        - shadow             # noisy with err
+    staticcheck:
+      checks: ["all", "-ST1003", "-QF1008"]   # ST1003: initialisms churn; QF1008: embedded selectors
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - io.WriteString(fmt.State)          # secret.Secret.Format
+    depguard:
+      rules:
+        library:
+          list-mode: lax
+          files: ["$all", "!$test"]
+          deny:
+            - pkg: "math/rand$"
+              desc: "use crypto/rand"
+            - pkg: "math/rand/v2$"
+              desc: "use crypto/rand"
+            - pkg: "log$"
+              desc: "output goes through audit.Sink or the CLI's writer, never a global logger"
+            - pkg: "unsafe$"
+              desc: "no unsafe in a secrets library"
+            - pkg: "reflect$"
+              desc: "keep secret types out of reflection"
+            - pkg: "github.com/pkg/errors"
+              desc: "use errors and fmt"
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^fmt\.Print(f|ln)?$'
+          msg: "library code must not print; use the CLI's io.Writer"
+        - pattern: '^(bytes\.Equal|reflect\.DeepEqual)$'
+          msg: "compare secrets with crypto/subtle or hmac.Equal; for public data add //nolint:forbidigo // public: <why>"
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    perfsprint:
+      strconcat: false
+    revive:
+      rules:
+        - name: error-naming
+        - name: error-strings
+        - name: error-return
+        - name: errorf
+        - name: context-as-argument
+        - name: defer
+        - name: unconditional-recursion
+        - name: datarace
+        - name: waitgroup-by-value
+        - name: exported
+  exclusions:
+    generated: strict
+    warn-unused: true
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [forcetypeassert, forbidigo, noctx, depguard, gosec, musttag, perfsprint]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/mtnaskari/goraz]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

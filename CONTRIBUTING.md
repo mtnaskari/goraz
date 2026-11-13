@@ -15,7 +15,9 @@ Thank you for considering a contribution. Security reviews are especially welcom
 make check
 ```
 
-That runs `gofmt`, `go vet`, `staticcheck`, `gosec`, `govulncheck` and `go test -race`. `make fuzz` runs each fuzz target briefly.
+That runs `gofmt`, `go vet`, golangci-lint with the configuration in `.golangci.yml` (once per platform and build tag), `govulncheck` and `go test -race`. `make fuzz` runs each fuzz target briefly, and `make bench` runs the benchmarks.
+
+A change that claims to make something faster shows `benchstat` output from before and after. Hot paths also have allocation budgets in their tests, which fail if a change adds allocations.
 
 ## Documentation
 
