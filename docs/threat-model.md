@@ -168,6 +168,7 @@ The audit log detects edits and gaps under a hash chain with an HMAC key. It is 
 
 - Whoever holds the audit key can rewrite the log. Everyone who can unlock the vault holds that key.
 - Removing recent entries is only detected back to the last vault write, because each device's position is anchored in the manifest at each write.
+- Every process checks the whole log when it first writes to it. A long-running process then checks only entries added after its own, so an edit to an earlier entry is found by the next full check: a new process, or `goraz audit verify`.
 - Each device keeps its own log, which isn't synced or part of a vault backup. Losing that device's state directory loses its log and gives the device a new identity.
 - It is not encrypted. Timestamps, event types and per-item HMACs are visible to anyone who reads it.
 - It records what goraz did, on the machine it ran on. A client-side log can't prove that nothing else read the file.

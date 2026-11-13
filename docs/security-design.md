@@ -563,12 +563,12 @@ github.com/mtnaskari/goraz            (module path is pending a decision)
   audit      Event types, Sink interface, JSON sink, chained log, Verify
   secret     Secret type: redacted String, GoString, Format and MarshalJSON; Wipe
   internal/  envelope, format, kdf, audit, harden, names, state
-  cmd/goraz  CLI, using only the public packages
+  cmd/goraz  CLI
 ```
 
 CLI commands: `init`, `put`, `get`, `ls`, `rm`, `destroy`, `history`, `restore`, `run`, `read`, `passwd`, `slot`, `rekey`, `generate`, `totp`, `clip`, `report`, `token issue|list|revoke|rotate|verify|expiring|rotate-verifier`, `audit verify|hash|tail|rotate-key`, `state reset`, `service create|sync|rotate|remove|list`, `import`, `export`, `doctor`.
 
-`vault` holds no background goroutine and no global state. Only a `service.Client` runs one, and `Close` stops it. All errors are exported sentinels, and no error message contains a secret or a value.
+`vault` holds no background goroutine and no global state. Only a `service.Client` runs one, and `Close` stops it. Every error a caller can act on is an exported sentinel or wraps one, so callers use `errors.Is`. No error message contains a secret, a value or a name. All errors are exported sentinels, and no error message contains a secret or a value.
 
 ## 18. Verification plan
 

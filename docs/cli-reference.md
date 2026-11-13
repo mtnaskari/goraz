@@ -9,6 +9,14 @@ Run `goraz help` for a short list, or `goraz COMMAND --help` for the flags of a 
 
 Secrets are read from a hidden prompt, stdin or a file descriptor. They are never accepted as arguments or from environment variables.
 
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | An error, such as a wrong passphrase, a missing item or a refused file |
+| 2 | Wrong usage, such as an unknown flag or an argument the command doesn't take |
+
 ## Flags for commands that open a vault
 
 | Flag | Meaning |
