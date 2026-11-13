@@ -2,13 +2,35 @@ A refactor release: clearer errors, safer writes, far fewer allocations on hot p
 
 **goraz has not had an independent security audit.** Don't make it the only protection for highly sensitive credentials. Read [what it does not defend against](https://mtnaskari.github.io/goraz/threat-model#4-what-goraz-does-not-defend-against). The Go API and command-line flags may change before version 1.
 
-## Breaking changes
+## Breaking changes and how to migrate
 
-- `password.HIBP` and `password.NewHIBP` moved to the new package `password/hibp`, as `hibp.Client` and `hibp.New`. Programs that don't use the breach check no longer link `net/http`.
-- `vault.CreateOptions.Profile`, `vault.RekeyOptions.Profile` and `Vault.ChangePassphrase` take the new public type `vault.Profile`.
-- `vault.Options.State` is replaced by `vault.Options.Memory`, of type `vault.MemoryState`.
-- `vault.VaultIDFromFile` is renamed `vault.IDFromFile`.
-- The command line exits with code 2 for wrong usage, and refuses arguments a command doesn't take. Scripts that only check for a non-zero exit code are unaffected.
+**Breach check moved to `password/hibp`.** Programs that don't use it no longer link `net/http`.
+
+```go
+// v0.1.x
+h := password.NewHIBP()
+// v0.2.0
+import "github.com/mtnaskari/goraz/password/hibp"
+h := hibp.New() // *hibp.Client; Count works as before.
+```
+
+**KDF profiles have a public type, `vault.Profile`.** `CreateOptions.Profile`, `RekeyOptions.Profile` and `Vault.ChangePassphrase` took a type from an internal package, so callers outside the module could only pass the zero value. Leave it empty for the default, or name a profile:
+
+```go
+vault.CreateOptions{Passphrase: pass, Profile: vault.ProfileStrong}
+v.ChangePassphrase(pass, nil, vault.ProfileStandard, false)
+```
+
+**`vault.Options.State` is replaced by `vault.Options.Memory`.** The old field took an internal type. To keep rollback state in memory instead of on disk, share one `*vault.MemoryState` across opens:
+
+```go
+mem := vault.NewMemoryState()
+v, err := vault.Open(path, cred, vault.Options{Memory: mem})
+```
+
+**`vault.VaultIDFromFile` is renamed `vault.IDFromFile`**, and returns `[vault.IDSize]byte`. Rename the call; the value is the same.
+
+**Command line:** wrong usage now exits with code 2 instead of 1, and a command refuses arguments it doesn't take. Scripts that only check for a non-zero exit code are unaffected.
 
 ## Other changes
 
