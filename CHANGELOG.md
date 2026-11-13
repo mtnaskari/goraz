@@ -27,6 +27,10 @@ All notable changes to goraz are listed here. Versions follow [Semantic Versioni
 - Token names can't contain control characters.
 - The command-line binary runs with data-independent timing on CPUs that support it.
 
+### Fixed
+
+- The Docker guide mounted the service file as a single file. A single-file bind mount never sees `service sync` replace the file, so a running container silently kept old data. The guide now mounts a directory, and explains how file-backed Compose secrets keep their host owner and mode.
+
 ### Performance
 
 - `audit.JSONSink.Record` makes no allocations, down from 5.
