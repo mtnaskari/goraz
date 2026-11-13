@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
     paths: ["docs/**", "site/**", ".github/workflows/docs.yml"]
+  # The top bar shows the latest release tag, so rebuild whenever a release is published.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
