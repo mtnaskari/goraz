@@ -58,6 +58,10 @@ goraz normally writes its audit log and state to disk. In a read-only container,
 
 Docker mounts a secret file the same way, so a new key file isn't seen until the container is recreated: `docker compose up -d --force-recreate api`. Write the new key as a second line first (`goraz service rotate` does this), recreate the container, deploy the new service file, then remove the old line.
 
+## A complete example
+
+[goraz-example](https://github.com/mtnaskari/goraz-example) runs this setup with Docker Compose: a read-only image, Postgres alongside, and scripts that rotate each secret while the service keeps running.
+
 ## What has been tested
 
 The Compose form was run on Docker Desktop for macOS with Linux arm64 containers: a read-only root, all capabilities dropped, Postgres alongside, and secret rotations reaching the running container without a restart. A plain `docker run` was run with a read-only root, no network and all capabilities dropped. Swarm secrets have not been tested.

@@ -44,6 +44,7 @@ goraz run --env DB_PASSWORD=goraz://prod/db/password -- ./my-app
 |---|---|
 | Store API tokens in a production Go service | [Guide](docs/guides/api-tokens-in-go-service.md) |
 | Use secrets in [Docker](docs/guides/docker-secrets.md), [Kubernetes](docs/guides/kubernetes-secrets.md), [systemd](docs/guides/systemd-credentials.md) or [CI](docs/guides/ci-secrets.md) | Follow the link for each |
+| See a complete service: Postgres, rotating JWT keys, a webhook and a Telegram bot in Docker Compose | [goraz-example](https://github.com/mtnaskari/goraz-example) |
 | Issue and verify API tokens from my own Go API | [Guide](docs/guides/issue-api-tokens-in-go.md) |
 | Replace a `.env` file | [Guide](docs/guides/replace-dotenv-file.md) |
 | Manage passwords and TOTP codes in the terminal | [Guide](docs/guides/password-manager-cli.md) |

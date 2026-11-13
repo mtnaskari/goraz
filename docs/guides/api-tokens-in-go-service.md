@@ -75,7 +75,7 @@ Deploy the new `api.goraz`. A running client checks the file every 30 seconds an
 
 ## Patterns for real secrets
 
-These snippets come from a complete example service: an orders API with Postgres, rotating session keys, a payment webhook and a Telegram bot, run with Docker Compose.
+These snippets come from [goraz-example](https://github.com/mtnaskari/goraz-example), a complete service you can run: an orders API with Postgres, rotating session keys, a payment webhook and a Telegram bot, run with Docker Compose.
 
 **Read the database password for each new connection**, so a rotated password takes effect without a restart. With pgx:
 
