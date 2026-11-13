@@ -4,6 +4,8 @@ All notable changes to goraz are listed here. Versions follow [Semantic Versioni
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
 ### Breaking changes
 
 - `password.HIBP` and `password.NewHIBP` moved to the new package `password/hibp`, as `hibp.Client` and `hibp.New`. Programs that don't check passwords against Have I Been Pwned no longer link `net/http`.
@@ -30,6 +32,11 @@ All notable changes to goraz are listed here. Versions follow [Semantic Versioni
 ### Fixed
 
 - The Docker guide mounted the service file as a single file. A single-file bind mount never sees `service sync` replace the file, so a running container silently kept old data. The guide now mounts a directory, and explains how file-backed Compose secrets keep their host owner and mode.
+
+### Documentation
+
+- The service and Docker guides link [goraz-example](https://github.com/mtnaskari/goraz-example), a complete service that runs the documented setup with Docker Compose.
+- Every page of the documentation site credits the author.
 
 ### Performance
 
@@ -68,5 +75,7 @@ The first public release.
 - Passwords, passphrases, TOTP and HOTP, automatic clipboard clearing and an opt-in breach check.
 - A hash-chained audit log that records no names or values.
 
+[Unreleased]: https://github.com/mtnaskari/goraz/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mtnaskari/goraz/releases/tag/v0.2.0
 [0.1.1]: https://github.com/mtnaskari/goraz/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mtnaskari/goraz/releases/tag/v0.1.0
