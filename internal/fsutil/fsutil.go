@@ -12,11 +12,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// ErrNotDurable means a file was replaced, but its directory couldn't be synced,
+// so the change may not survive a power loss.
+var ErrNotDurable = errors.New("fsutil: the file was written, but syncing its directory failed, so it may not survive a power loss")
+
+// ErrLockTimeout means another process held a lock for longer than LockTimeout.
+var ErrLockTimeout = errors.New("fsutil: another goraz process is holding the lock; try again")
+
+// LockTimeout is how long AcquireLock waits.
+const LockTimeout = 10 * time.Second
+
+// lockTimeout is LockTimeout, shortened only by tests.
+var lockTimeout = LockTimeout
 
 // ErrUnsafeFile is returned when a file's type, owner or mode is unsafe.
 var ErrUnsafeFile = errors.New("fsutil: file is unsafe: it must be a regular file owned by you, and not writable by others")
@@ -100,21 +116,29 @@ func AcquireLock(path string, shared bool) (*Lock, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	how := unix.LOCK_EX
+	how := unix.LOCK_EX | unix.LOCK_NB
 	if shared {
-		how = unix.LOCK_SH
+		how = unix.LOCK_SH | unix.LOCK_NB
 	}
+	// A wait without a deadline could hang a service forever behind a stuck process.
+	deadline := time.Now().Add(lockTimeout)
+	delay := time.Millisecond
 	for {
 		err = unix.Flock(fd, how)
-		if !errors.Is(err, unix.EINTR) {
-			break
+		if err == nil {
+			return &Lock{f: f}, nil
 		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EINTR) {
+			_ = f.Close()
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			return nil, ErrLockTimeout
+		}
+		time.Sleep(delay)
+		delay = min(delay*2, 100*time.Millisecond)
 	}
-	if err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return &Lock{f: f}, nil
 }
 
 // Release drops the lock.
@@ -188,7 +212,10 @@ func AtomicWrite(path string, data []byte, hook Hook) (err error) {
 	if err := hook(StageAfterRename); err != nil {
 		return err
 	}
-	return SyncDir(dir)
+	if err := SyncDir(dir); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotDurable, err)
+	}
+	return nil
 }
 
 // RemoveStaleTemps deletes temporary files left beside path by a crash. It must be
@@ -201,6 +228,31 @@ func RemoveStaleTemps(path string) {
 	for _, m := range matches {
 		_ = os.Remove(m)
 	}
+}
+
+// WriteNew creates path with mode 0600 and writes data, failing if anything already
+// exists there. The check and the creation are one step, so nothing can be
+// replaced. The file and its directory are synced.
+func WriteNew(path string, data []byte) error {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return &os.PathError{Op: "create", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), path) // #nosec G115 -- fd is non-negative here.
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return SyncDir(filepath.Dir(path))
 }
 
 // SyncDir fsyncs a directory so that a rename survives a crash.
@@ -221,7 +273,40 @@ func SyncDir(dir string) error {
 	return nil
 }
 
-// EnsurePrivateDir creates dir with mode 0700 if it doesn't exist.
+// EnsurePrivateDir creates dir and any missing parents with mode 0700, and syncs
+// each new directory's parent so that the creation survives a crash. An existing
+// dir must be owned by the current user and not writable by others.
 func EnsurePrivateDir(dir string) error {
-	return os.MkdirAll(dir, 0o700)
+	dir = filepath.Clean(dir)
+	st, err := os.Stat(dir)
+	switch {
+	case err == nil:
+		return checkDir(st)
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		if err := EnsurePrivateDir(parent); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return SyncDir(parent)
 }
+
+func checkDir(st fs.FileInfo) error {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !st.IsDir() || !ok {
+		return ErrUnsafeFile
+	}
+	if sys.Uid != uint32(os.Geteuid()) || st.Mode().Perm()&0o022 != 0 { // #nosec G115 -- a uid always fits.
+		return ErrUnsafeDir
+	}
+	return nil
+}
+
+// ErrUnsafeDir is returned for a directory that another user owns or can write to.
+var ErrUnsafeDir = errors.New("fsutil: directory is unsafe: it must be owned by you, and not writable by others")
