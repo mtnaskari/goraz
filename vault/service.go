@@ -3,7 +3,7 @@ package vault
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -183,7 +183,7 @@ func (v *Vault) CreateService(name, out string, o ServiceOptions) (secret.Secret
 		return secret.Secret{}, err
 	}
 	if len(o.Prefixes) == 0 || len(o.Prefixes) > maxPrefixCount {
-		return secret.Secret{}, errors.New("vault: a service needs at least one prefix")
+		return secret.Secret{}, fmt.Errorf("%w: a service needs at least one prefix", ErrInvalidInput)
 	}
 	for _, p := range o.Prefixes {
 		if err := names.Validate(p); err != nil {
@@ -191,7 +191,7 @@ func (v *Vault) CreateService(name, out string, o ServiceOptions) (secret.Secret
 		}
 	}
 	if o.ValidFor < 0 {
-		return secret.Secret{}, errors.New("vault: a validity window can't be negative")
+		return secret.Secret{}, fmt.Errorf("%w: a validity window can't be negative", ErrInvalidInput)
 	}
 	var key secret.Secret
 	var file []byte

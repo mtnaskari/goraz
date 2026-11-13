@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/mtnaskari/goraz/audit"
-	"github.com/mtnaskari/goraz/internal/kdf"
 	"github.com/mtnaskari/goraz/secret"
 	"github.com/mtnaskari/goraz/token"
 	"github.com/mtnaskari/goraz/vault"
@@ -40,7 +39,7 @@ func setup(t *testing.T, o vault.ServiceOptions) *fixture {
 	f := &fixture{dir: dir, out: filepath.Join(dir, "api.goraz")}
 	f.now.Store(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano())
 	v, _, err := vault.Create(filepath.Join(dir, "main.goraz"), vault.CreateOptions{
-		Passphrase: []byte(pass), Profile: kdf.Interactive,
+		Passphrase: []byte(pass), Profile: vault.ProfileInteractive,
 		Options: vault.Options{StateDir: filepath.Join(dir, "state"), Now: f.clock},
 	})
 	if err != nil {
@@ -418,7 +417,7 @@ func TestRotationBeforeKeyDeployKeepsRunning(t *testing.T) {
 func TestRekeyForcesServiceRotation(t *testing.T) {
 	f := setup(t, vault.ServiceOptions{})
 	if err := f.main.Rekey(vault.RekeyOptions{
-		Passphrase: []byte(pass), Profile: kdf.Interactive,
+		Passphrase: []byte(pass), Profile: vault.ProfileInteractive,
 		Confirm: func(vault.RekeyResult) error { return nil },
 	}); err != nil {
 		t.Fatal(err)

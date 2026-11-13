@@ -1,3 +1,5 @@
+//go:debug dataindependenttiming=1
+
 // Command goraz is a local secrets tool. See README.md and docs/threat-model.md.
 package main
 
@@ -6,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,6 +34,7 @@ import (
 	"github.com/mtnaskari/goraz/internal/kdf"
 	"github.com/mtnaskari/goraz/internal/names"
 	"github.com/mtnaskari/goraz/password"
+	"github.com/mtnaskari/goraz/password/hibp"
 	"github.com/mtnaskari/goraz/secret"
 	"github.com/mtnaskari/goraz/service"
 	"github.com/mtnaskari/goraz/token"
@@ -101,10 +105,10 @@ func main() {
 	os.Exit(a.run(os.Args[1:]))
 }
 
-// errExit carries a child's exit code.
-type errExit int
+// exitCodeError carries a child's exit code.
+type exitCodeError int
 
-func (e errExit) Error() string { return "exit " + strconv.Itoa(int(e)) }
+func (e exitCodeError) Error() string { return "exit " + strconv.Itoa(int(e)) }
 
 func (a *app) run(args []string) int {
 	if len(args) == 0 {
@@ -134,15 +138,21 @@ func (a *app) run(args []string) int {
 		return 2
 	}
 	if err := h(rest); err != nil {
-		var ex errExit
-		if errors.As(err, &ex) {
+		if ex, ok := errors.AsType[exitCodeError](err); ok {
 			return int(ex)
 		}
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		if ue, ok := errors.AsType[*usageError](err); ok {
+			// The flag package has already printed its own parse errors.
+			if !ue.printed {
+				fmt.Fprintf(a.stderr, "goraz: %v\n", err)
+			}
+			return exitUsage
+		}
 		fmt.Fprintf(a.stderr, "goraz: %v\n", err)
-		return 1
+		return exitError
 	}
 	return 0
 }
@@ -194,11 +204,69 @@ func (c *common) path() (string, error) {
 	return filepath.Join(home, ".local", "share", "goraz", "vault.goraz"), nil
 }
 
+// Exit codes: 0 for success, 1 for an error, 2 for wrong usage.
+const (
+	exitError = 1
+	exitUsage = 2
+)
+
+// usageError marks wrong usage, which exits with code 2.
+type usageError struct {
+	err     error
+	printed bool
+}
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+func usagef(format string, args ...any) error {
+	return &usageError{err: fmt.Errorf(format, args...)}
+}
+
+// parseFlags parses flags, marking a parse error as wrong usage that the flag
+// package has already printed.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	err := fs.Parse(args)
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
+		return &usageError{err: err, printed: true}
+	}
+	return err
+}
+
+// parseNoArgs is parse for a command that takes no positional arguments.
+func parseNoArgs(fs *flag.FlagSet, args []string) error {
+	pos, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return usagef("goraz %s takes no arguments, but got %q", fs.Name(), pos[0])
+	}
+	return nil
+}
+
+// checkArgs refuses a subcommand's positional arguments unless it is one that takes
+// exactly one. It runs before the vault is unlocked, so a typo costs no KDF run.
+func checkArgs(cmd, sub string, pos []string, withOne ...string) error {
+	for _, w := range withOne {
+		if sub == w {
+			if len(pos) != 1 {
+				return usagef("usage: goraz %s %s NAME", cmd, sub)
+			}
+			return nil
+		}
+	}
+	if len(pos) > 0 {
+		return usagef("goraz %s %s takes no arguments, but got %q", cmd, sub, pos[0])
+	}
+	return nil
+}
+
 // parse allows flags and positional arguments in any order.
 func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for {
-		if err := fs.Parse(args); err != nil {
+		if err := parseFlags(fs, args); err != nil {
 			return nil, err
 		}
 		rest := fs.Args()
@@ -368,20 +436,17 @@ func (a *app) open(c *common) (*vault.Vault, error) {
 
 func (a *app) cmdInit(args []string) error {
 	fs, c := a.flags("init")
-	profile := fs.String("kdf", kdf.Default.Name, "KDF profile: interactive, standard, strong or max")
+	profile := fs.String("kdf", string(vault.ProfileStrong), "KDF profile: interactive, standard, strong or max")
 	acceptWeak := fs.Bool("accept-weak-passphrase", false, "skip the passphrase policy")
 	generate := fs.Bool("generate-passphrase", false, "generate a passphrase and print it once")
-	if _, err := parse(fs, args); err != nil {
+	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
 	p, err := c.path()
 	if err != nil {
 		return err
 	}
-	prof, err := kdf.ProfileByName(*profile)
-	if err != nil {
-		return err
-	}
+	prof := vault.Profile(*profile)
 	var pass []byte
 	switch {
 	case *generate:
@@ -403,7 +468,8 @@ func (a *app) cmdInit(args []string) error {
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(pass, again) {
+		defer clear(again)
+		if subtle.ConstantTimeCompare(pass, again) != 1 {
 			return errors.New("the passphrases don't match")
 		}
 		clear(again)
@@ -458,7 +524,7 @@ func (a *app) cmdPut(args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: goraz put NAME")
+		return usagef("usage: goraz put NAME")
 	}
 	if err := names.Validate(pos[0]); err != nil {
 		return err
@@ -515,7 +581,7 @@ func (a *app) cmdGet(args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: goraz get NAME")
+		return usagef("usage: goraz get NAME")
 	}
 	if err := names.Validate(pos[0]); err != nil {
 		return err
@@ -586,7 +652,7 @@ func (a *app) cmdRead(args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: goraz read goraz://NAME[#FIELD]")
+		return usagef("usage: goraz read goraz://NAME[#FIELD]")
 	}
 	name, field, err := parseRef(pos[0])
 	if err != nil {
@@ -611,7 +677,7 @@ func (a *app) cmdRead(args []string) error {
 
 func (a *app) cmdList(args []string) error {
 	fs, c := a.flags("ls")
-	if _, err := parse(fs, args); err != nil {
+	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
 	v, err := a.open(c)
@@ -636,7 +702,7 @@ func (a *app) oneName(name string, args []string, f func(*vault.Vault, string) e
 		return err
 	}
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: goraz %s NAME", name)
+		return usagef("usage: goraz %s NAME", name)
 	}
 	v, err := a.open(c)
 	if err != nil {
@@ -684,7 +750,7 @@ func (a *app) cmdRestore(args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: goraz restore NAME [--version N]")
+		return usagef("usage: goraz restore NAME [--version N]")
 	}
 	v, err := a.open(c)
 	if err != nil {
@@ -734,15 +800,15 @@ func (a *app) cmdRun(args []string) error {
 	fs.Var(&env, "env", "KEY=goraz://NAME[#FIELD]; repeatable")
 	envFile := fs.String("env-file", "", "a file of KEY=goraz://NAME lines, holding no secrets")
 	noWarn := fs.Bool("no-warn", false, "don't print the environment warning")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	argv := fs.Args()
 	if len(argv) == 0 {
-		return errors.New("usage: goraz run --env KEY=goraz://NAME -- COMMAND [ARGS]")
+		return usagef("usage: goraz run --env KEY=goraz://NAME -- COMMAND [ARGS]")
 	}
 	if *envFile != "" {
-		b, err := os.ReadFile(*envFile) // #nosec G304 -- a path the user named on the command line.
+		b, err := fsutil.ReadFile(*envFile, 1<<20, fsutil.Policy{FollowSymlinks: true, AllowRootOwner: true})
 		if err != nil {
 			return err
 		}
@@ -818,7 +884,7 @@ func (a *app) cmdImport(args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: goraz import FILE --prefix NAME")
+		return usagef("usage: goraz import FILE --prefix NAME")
 	}
 	data, err := fsutil.ReadFile(pos[0], format.MaxManifestSize, fsutil.Policy{FollowSymlinks: true})
 	if err != nil {
@@ -906,11 +972,11 @@ type exportItem struct {
 func (a *app) cmdExport(args []string) error {
 	fs, c := a.flags("export")
 	out := fs.String("out", "", "output file, created with mode 0600")
-	if _, err := parse(fs, args); err != nil {
+	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
 	if *out == "" {
-		return errors.New("usage: goraz export --out FILE (the file holds every secret in plain text)")
+		return usagef("usage: goraz export --out FILE (the file holds every secret in plain text)")
 	}
 	if _, err := os.Lstat(*out); err == nil {
 		return errors.New("the output file already exists")
@@ -946,7 +1012,8 @@ func (a *app) cmdExport(args []string) error {
 		return err
 	}
 	defer clear(b)
-	if err := fsutil.AtomicWrite(*out, b, nil); err != nil {
+	// Created with O_EXCL, so a file made since the check above is never replaced.
+	if err := fsutil.WriteNew(*out, b); err != nil {
 		return err
 	}
 	a.warn("the export file holds every secret in plain text; delete it as soon as possible")
@@ -966,7 +1033,8 @@ func (a *app) newPassphrase(fd int) ([]byte, error) {
 		return nil, err
 	}
 	defer clear(q)
-	if !bytes.Equal(p, q) {
+	if subtle.ConstantTimeCompare(p, q) != 1 {
+		clear(p)
 		return nil, errors.New("the passphrases don't match")
 	}
 	return p, nil
@@ -975,15 +1043,12 @@ func (a *app) newPassphrase(fd int) ([]byte, error) {
 func (a *app) cmdPasswd(args []string) error {
 	fs, c := a.flags("passwd")
 	newFD := fs.Int("new-passphrase-fd", -1, "read the new passphrase from this file descriptor")
-	profile := fs.String("kdf", kdf.Default.Name, "KDF profile")
+	profile := fs.String("kdf", string(vault.ProfileStrong), "KDF profile")
 	acceptWeak := fs.Bool("accept-weak-passphrase", false, "skip the passphrase policy")
-	if _, err := parse(fs, args); err != nil {
+	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	prof, err := kdf.ProfileByName(*profile)
-	if err != nil {
-		return err
-	}
+	prof := vault.Profile(*profile)
 	v, err := a.open(c)
 	if err != nil {
 		return err
@@ -1007,12 +1072,15 @@ func (a *app) cmdPasswd(args []string) error {
 
 func (a *app) cmdSlot(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: goraz slot list|add-machine|add-recovery|remove")
+		return usagef("usage: goraz slot list|add-machine|add-recovery|remove")
 	}
 	sub, rest := args[0], args[1:]
 	fs, c := a.flags("slot " + sub)
 	pos, err := parse(fs, rest)
 	if err != nil {
+		return err
+	}
+	if err := checkArgs("slot", sub, pos, "remove"); err != nil {
 		return err
 	}
 	v, err := a.open(c)
@@ -1045,7 +1113,7 @@ func (a *app) cmdSlot(args []string) error {
 		return nil
 	case "remove":
 		if len(pos) != 1 {
-			return errors.New("usage: goraz slot remove ID")
+			return usagef("usage: goraz slot remove ID")
 		}
 		if err := v.RemoveSlot(pos[0]); err != nil {
 			return err
@@ -1059,17 +1127,14 @@ func (a *app) cmdSlot(args []string) error {
 func (a *app) cmdRekey(args []string) error {
 	fs, c := a.flags("rekey")
 	newFD := fs.Int("new-passphrase-fd", -1, "read the new passphrase from this file descriptor")
-	profile := fs.String("kdf", kdf.Default.Name, "KDF profile")
+	profile := fs.String("kdf", string(vault.ProfileStrong), "KDF profile")
 	keep := fs.Bool("keep-tokens", false, "keep verifier keys, for a routine rekey with no suspected compromise")
 	reissue := fs.Int("reissue-machine", 0, "how many new machine keys to create")
 	yes := fs.Bool("confirm-saved", false, "don't ask: the caller has arranged to save the new credentials from stdout")
-	if _, err := parse(fs, args); err != nil {
+	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
-	prof, err := kdf.ProfileByName(*profile)
-	if err != nil {
-		return err
-	}
+	prof := vault.Profile(*profile)
 	v, err := a.open(c)
 	if err != nil {
 		return err
@@ -1119,17 +1184,17 @@ func (a *app) cmdRekey(args []string) error {
 
 func (a *app) cmdState(args []string) error {
 	if len(args) == 0 || args[0] != "reset" {
-		return errors.New("usage: goraz state reset")
+		return usagef("usage: goraz state reset")
 	}
 	fs, c := a.flags("state reset")
-	if _, err := parse(fs, args[1:]); err != nil {
+	if err := parseNoArgs(fs, args[1:]); err != nil {
 		return err
 	}
 	p, err := c.path()
 	if err != nil {
 		return err
 	}
-	id, err := vault.VaultIDFromFile(p)
+	id, err := vault.IDFromFile(p)
 	if err != nil {
 		return err
 	}
@@ -1151,8 +1216,11 @@ func (a *app) cmdGenerate(args []string) error {
 	symbols := fs.Bool("symbols", false, "include symbols")
 	words := fs.Int("words", 0, "generate a passphrase with this many words")
 	sep := fs.String("separator", "-", "passphrase separator")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return usagef("goraz generate takes no arguments")
 	}
 	var s secret.Secret
 	var err error
@@ -1199,9 +1267,9 @@ func (a *app) cmdTOTP(args []string) error {
 
 func (a *app) cmdReport(args []string) error {
 	fs, c := a.flags("report")
-	hibp := fs.Bool("hibp", false, "check passwords against Have I Been Pwned (the only network use in goraz)")
+	checkHIBP := fs.Bool("hibp", false, "check passwords against Have I Been Pwned (the only network use in goraz)")
 	maxAge := fs.Duration("max-age", 365*24*time.Hour, "report values older than this")
-	if _, err := parse(fs, args); err != nil {
+	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
 	v, err := a.open(c)
@@ -1214,7 +1282,7 @@ func (a *app) cmdReport(args []string) error {
 		return err
 	}
 	seen := map[[32]byte][]string{}
-	client := password.NewHIBP()
+	client := hibp.New()
 	for _, m := range list {
 		if m.Type != vault.TypeLogin && m.Type != vault.TypeSecret {
 			continue
@@ -1230,7 +1298,7 @@ func (a *app) cmdReport(args []string) error {
 			if m.Type == vault.TypeLogin && len(val) < 12 {
 				fmt.Fprintf(a.stdout, "short\t%s\n", m.Name)
 			}
-			if *hibp && m.Type == vault.TypeLogin {
+			if *checkHIBP && m.Type == vault.TypeLogin {
 				n, err := client.Count(context.Background(), val)
 				if err != nil {
 					it.Wipe()
@@ -1278,7 +1346,7 @@ func (s *scopeList) Set(v string) error {
 
 func (a *app) cmdToken(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: goraz token issue|list|revoke|rotate|verify|expiring|rotate-verifier")
+		return usagef("usage: goraz token issue|list|revoke|rotate|verify|expiring|rotate-verifier")
 	}
 	sub, rest := args[0], args[1:]
 	fs, c := a.flags("token " + sub)
@@ -1291,6 +1359,9 @@ func (a *app) cmdToken(args []string) error {
 	fs.Var(&scopes, "scope", "scope, repeatable; matched exactly")
 	pos, err := parse(fs, rest)
 	if err != nil {
+		return err
+	}
+	if err := checkArgs("token", sub, pos, "revoke", "rotate"); err != nil {
 		return err
 	}
 	v, err := a.open(c)
@@ -1343,7 +1414,7 @@ func (a *app) cmdToken(args []string) error {
 		fmt.Fprintf(a.stderr, "ID %s, expires %s. The token is shown once.\n", hex.EncodeToString(rec.ID), rec.Expires.Format(time.RFC3339))
 		return nil
 	case "list":
-		var store token.Store = v.TokenStore()
+		store := v.TokenStore()
 		if *svc != "" {
 			store = serviceStore{v, *svc}
 		}
@@ -1368,7 +1439,7 @@ func (a *app) cmdToken(args []string) error {
 		return nil
 	case "revoke", "rotate":
 		if len(pos) != 1 {
-			return fmt.Errorf("usage: goraz token %s ID", sub)
+			return usagef("usage: goraz token %s ID", sub)
 		}
 		id, err := parseID(pos[0])
 		if err != nil {
@@ -1440,7 +1511,7 @@ func writeKey(path string, key []byte) error {
 
 func (a *app) cmdService(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: goraz service create|sync|rotate|remove|list")
+		return usagef("usage: goraz service create|sync|rotate|remove|list")
 	}
 	sub, rest := args[0], args[1:]
 	fs, c := a.flags("service " + sub)
@@ -1451,6 +1522,9 @@ func (a *app) cmdService(args []string) error {
 	fs.Var(&prefixes, "prefix", "name prefix, repeatable; matches whole segments")
 	pos, err := parse(fs, rest)
 	if err != nil {
+		return err
+	}
+	if err := checkArgs("service", sub, pos, "create", "sync", "rotate", "remove"); err != nil {
 		return err
 	}
 	v, err := a.open(c)
@@ -1469,7 +1543,7 @@ func (a *app) cmdService(args []string) error {
 		return nil
 	}
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: goraz service %s NAME", sub)
+		return usagef("usage: goraz service %s NAME", sub)
 	}
 	name := pos[0]
 	if *validFor != 0 && sub != "create" {
@@ -1481,7 +1555,7 @@ func (a *app) cmdService(args []string) error {
 	switch sub {
 	case "create", "rotate":
 		if *out == "" || *keyOut == "" {
-			return fmt.Errorf("usage: goraz service %s NAME --out FILE --key-out FILE", sub)
+			return usagef("usage: goraz service %s NAME --out FILE --key-out FILE", sub)
 		}
 		// The key is saved before anything is committed. A failure changes nothing, so
 		// no file can exist whose key nobody holds.
@@ -1510,7 +1584,7 @@ func (a *app) cmdService(args []string) error {
 		return nil
 	case "sync":
 		if *out == "" {
-			return errors.New("usage: goraz service sync NAME --out FILE")
+			return usagef("usage: goraz service sync NAME --out FILE")
 		}
 		if err := v.SyncService(name, *out); err != nil {
 			return err
@@ -1529,12 +1603,15 @@ func (a *app) cmdService(args []string) error {
 
 func (a *app) cmdAudit(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: goraz audit verify|hash|tail|rotate-key")
+		return usagef("usage: goraz audit verify|hash|tail|rotate-key")
 	}
 	sub, rest := args[0], args[1:]
 	fs, c := a.flags("audit " + sub)
 	pos, err := parse(fs, rest)
 	if err != nil {
+		return err
+	}
+	if err := checkArgs("audit", sub, pos, "hash"); err != nil {
 		return err
 	}
 	v, err := a.open(c)
@@ -1556,7 +1633,7 @@ func (a *app) cmdAudit(args []string) error {
 		return nil
 	case "hash":
 		if len(pos) != 1 {
-			return errors.New("usage: goraz audit hash NAME")
+			return usagef("usage: goraz audit hash NAME")
 		}
 		h, err := v.AuditHash(pos[0])
 		if err != nil {
@@ -1598,7 +1675,7 @@ func yesNo(b bool) string {
 func (a *app) cmdDoctor(args []string) error {
 	fs, c := a.flags("doctor")
 	noVault := fs.Bool("no-vault", false, "report process protections only")
-	if _, err := parse(fs, args); err != nil {
+	if err := parseNoArgs(fs, args); err != nil {
 		return err
 	}
 	s := harden.Status()
@@ -1628,12 +1705,12 @@ func (a *app) cmdDoctor(args []string) error {
 	}
 	if len(bad) > 0 {
 		fmt.Fprintf(a.stdout, "damaged items: %s\n", strings.Join(bad, ", "))
-		return errExit(1)
+		return exitCodeError(1)
 	}
 	fmt.Fprintln(a.stdout, "all items verified")
 	if _, err := v.VerifyAudit(); err != nil {
 		fmt.Fprintf(a.stdout, "audit log: %v\n", err)
-		return errExit(1)
+		return exitCodeError(1)
 	}
 	fmt.Fprintln(a.stdout, "audit log verified")
 	return nil

@@ -71,7 +71,7 @@ func benchVault(b *testing.B, items int) *Vault {
 
 func BenchmarkGet(b *testing.B) {
 	v := benchVault(b, 100)
-	b.ResetTimer()
+	b.ReportAllocs()
 	for b.Loop() {
 		if _, err := v.Get("team/service50/token"); err != nil {
 			b.Fatal(err)
@@ -82,7 +82,7 @@ func BenchmarkGet(b *testing.B) {
 func BenchmarkPut100Items(b *testing.B) {
 	v := benchVault(b, 100)
 	value := bytes.Repeat([]byte("n"), 256)
-	b.ResetTimer()
+	b.ReportAllocs()
 	for b.Loop() {
 		if err := v.Put(&Item{Name: "team/service50/token", Value: secret.New(value)}); err != nil {
 			b.Fatal(err)

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mtnaskari/goraz/audit"
-	"github.com/mtnaskari/goraz/internal/kdf"
 	"github.com/mtnaskari/goraz/secret"
 )
 
@@ -59,7 +58,7 @@ func writeGolden(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "g")
 	v, _, err := Create(p, CreateOptions{
-		Passphrase: []byte(goldenPass), Profile: kdf.Interactive,
+		Passphrase: []byte(goldenPass), Profile: ProfileInteractive,
 		Options: Options{StateDir: dir, Now: func() time.Time { return time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC) }},
 	})
 	if err != nil {

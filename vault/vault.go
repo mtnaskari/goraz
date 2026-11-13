@@ -4,6 +4,7 @@
 package vault
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -12,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -49,6 +51,9 @@ var (
 	ErrTooLarge         = errors.New("vault: a value is limited to 1 MiB")
 	ErrClosed           = errors.New("vault: closed")
 	ErrLimit            = errors.New("vault: this change would exceed a format limit")
+	ErrInvalidInput     = errors.New("vault: invalid input")
+	ErrNotDurable       = errors.New("vault: the change was written, but its directory couldn't be synced, so it may not survive a power loss")
+	ErrNotVault         = errors.New("vault: this is not a goraz vault file, or it is from a newer format version")
 	ErrNotServiceVault  = errors.New("vault: this file has a passphrase slot, so it is a main vault and can't be opened in service mode")
 )
 
@@ -170,8 +175,9 @@ func (c *Credential) unlock(h *format.Header) ([]byte, error) {
 			if err != nil {
 				return nil, ErrWrongCredential
 			}
-			defer clear(key)
-			return openSlot(key, h.VaultID, s)
+			vmk, err := openSlot(key, h.VaultID, s)
+			clear(key)
+			return vmk, err
 		}
 	case format.SlotRecovery:
 		code, err := tokfmt.ParseRecovery(c.recovery)
@@ -207,8 +213,9 @@ func (c *Credential) unlock(h *format.Header) ([]byte, error) {
 				if err != nil {
 					return nil, ErrWrongCredential
 				}
-				defer clear(key)
-				return openSlot(key, h.VaultID, s)
+				vmk, err := openSlot(key, h.VaultID, s)
+				clear(key)
+				return vmk, err
 			}
 			clear(p.Secret[:])
 		}
@@ -230,8 +237,9 @@ type Options struct {
 	StateDir string
 	// Audit replaces the chained file log. A service uses this.
 	Audit audit.Sink
-	// State overrides local state. A service uses an in-memory store.
-	State state.Store
+	// Memory keeps rollback state in this process only, instead of on disk. A
+	// service shares one across reloads, so it never accepts an older file.
+	Memory *MemoryState
 	// AcceptRollback and AcceptFork pin this exact file, discarding the other
 	// history. They are audited.
 	AcceptRollback bool
@@ -248,6 +256,21 @@ type Options struct {
 	// hook injects faults in tests.
 	hook fsutil.Hook
 }
+
+// IDSize is the size of a vault ID.
+const IDSize = 16
+
+// Both differences must be non-negative, so the build fails if the sizes differ.
+const (
+	_ uint = IDSize - format.IDSize
+	_ uint = format.IDSize - IDSize
+)
+
+// MemoryState remembers, within one process, the newest file seen for each vault.
+type MemoryState struct{ m *state.Memory }
+
+// NewMemoryState returns an empty MemoryState.
+func NewMemoryState() *MemoryState { return &MemoryState{m: state.NewMemory()} }
 
 // DefaultStateDir returns $GORAZ_STATE_DIR, $XDG_STATE_HOME/goraz or
 // ~/.local/state/goraz.
@@ -326,6 +349,9 @@ func itemContext(vaultID [format.IDSize]byte, id []byte, ver uint32) []byte {
 
 // decode runs the authenticated part of the open sequence.
 func decode(data []byte, cred *Credential) (*format.Header, *manifest, map[string][]byte, *harden.Locked, error) {
+	if !bytes.HasPrefix(data, []byte(format.Magic)) {
+		return nil, nil, nil, nil, ErrNotVault
+	}
 	h, n, err := format.Parse(data)
 	if err != nil {
 		return nil, nil, nil, nil, ErrTampered
@@ -534,6 +560,9 @@ func Open(path string, cred Credential, o Options) (*Vault, error) {
 // writes no state. A sink is required if the vault requires audit. A main vault is
 // refused, because these exceptions to the file rules apply only to service vaults.
 func OpenService(data []byte, cred Credential, o Options) (*Vault, error) {
+	if !bytes.HasPrefix(data, []byte(format.Magic)) {
+		return nil, ErrNotVault
+	}
 	h, _, err := format.Parse(data)
 	if err != nil {
 		return nil, ErrTampered
@@ -552,8 +581,9 @@ func openReadOnly(data []byte, cred Credential, o Options) (*Vault, error) {
 		return nil, err
 	}
 	v.readOnly = true
-	v.st = o.State
-	if v.st == nil {
+	if o.Memory != nil {
+		v.st = o.Memory.m
+	} else {
 		v.st = state.NewMemory()
 	}
 	if v.m.AuditRequired && o.Audit == nil {
@@ -582,7 +612,7 @@ func fromBytes(data []byte, cred Credential, o Options) (*Vault, error) {
 	}
 	v := &Vault{
 		readOnly: false, opts: o, now: now, hdr: h, m: m, blobs: blobs,
-		hash: sha256.Sum256(data), keys: keys, actor: cred.actor(), st: o.State,
+		hash: sha256.Sum256(data), keys: keys, actor: cred.actor(),
 	}
 	stored := v.hash
 	v.current.Store(&stored)
@@ -617,7 +647,7 @@ func (v *Vault) Generation() uint64 {
 }
 
 // ID returns the vault ID.
-func (v *Vault) ID() [format.IDSize]byte {
+func (v *Vault) ID() [IDSize]byte {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.hdr.VaultID
@@ -825,7 +855,7 @@ func assemble(h *format.Header, m *manifest, manifestKey []byte, blobs map[strin
 	}
 	defer clear(plain)
 	if len(plain)+envelope.Overhead > format.MaxManifestSize {
-		return nil, errors.New("vault: the manifest exceeds its size limit")
+		return nil, fmt.Errorf("%w: the manifest exceeds its size limit", ErrLimit)
 	}
 	h.ManifestLen = uint32(len(plain) + envelope.Overhead) // #nosec G115 -- bounded above.
 	head, err := h.Marshal()
@@ -842,13 +872,13 @@ func assemble(h *format.Header, m *manifest, manifestKey []byte, blobs map[strin
 		for _, ver := range m.Items[i].Versions {
 			blob, ok := blobs[blobKey(m.Items[i].ID, ver.Version)]
 			if !ok {
-				return nil, errors.New("vault: missing blob")
+				return nil, ErrTampered
 			}
 			out = append(out, blob...)
 		}
 	}
 	if len(out) > format.MaxFileSize {
-		return nil, errors.New("vault: the file exceeds its size limit")
+		return nil, fmt.Errorf("%w: the file exceeds its size limit", ErrLimit)
 	}
 	return out, nil
 }
@@ -895,9 +925,7 @@ func (v *Vault) commit(ev audit.Event, fn func(t *tx) error) error {
 	}
 	t := &tx{m: clone, blobs: make(map[string][]byte, len(v.blobs)), hdr: *v.hdr}
 	t.hdr.Slots = slices.Clone(v.hdr.Slots)
-	for k, b := range v.blobs {
-		t.blobs[k] = b
-	}
+	maps.Copy(t.blobs, v.blobs)
 	if err := fn(t); err != nil {
 		if t.keys != nil {
 			t.keys.Close()
@@ -920,6 +948,12 @@ func (v *Vault) commit(ev audit.Event, fn func(t *tx) error) error {
 	if err := v.record(ev); err != nil {
 		return abort(err)
 	}
+	// The entry above says the change happened. If it doesn't, say so too.
+	recorded := abort
+	abort = func(err error) error {
+		_ = v.record(audit.Event{Type: ev.Type, Outcome: audit.Failed, Actor: ev.Actor, Object: ev.Object})
+		return recorded(err)
+	}
 	t.m.Lineage = append(t.m.Lineage, state.Lineage{Generation: v.hdr.Generation, SHA256: slices.Clone(v.hash[:])})
 	if len(t.m.Lineage) > maxLineage {
 		t.m.Lineage = t.m.Lineage[len(t.m.Lineage)-maxLineage:]
@@ -929,7 +963,7 @@ func (v *Vault) commit(ev audit.Event, fn func(t *tx) error) error {
 			t.m.AuditAnchors = make(map[string]audit.Anchor)
 		}
 		if _, known := t.m.AuditAnchors[v.device]; !known && len(t.m.AuditAnchors) >= maxAnchors {
-			return abort(errors.New("vault: too many devices have written to this vault"))
+			return abort(fmt.Errorf("%w: too many devices have written to this vault", ErrLimit))
 		}
 		t.m.AuditAnchors[v.device] = v.log.Head()
 	}
@@ -946,8 +980,13 @@ func (v *Vault) commit(ev audit.Event, fn func(t *tx) error) error {
 	if err != nil {
 		return abort(err)
 	}
+	var notDurable error
 	if err := fsutil.AtomicWrite(v.path, file, v.opts.hook); err != nil {
-		return abort(err)
+		if !errors.Is(err, fsutil.ErrNotDurable) {
+			return abort(err)
+		}
+		// The file was replaced, so the rest of the commit must still happen.
+		notDurable = fmt.Errorf("%w: %w", ErrNotDurable, err)
 	}
 
 	hash := sha256.Sum256(file)
@@ -980,7 +1019,7 @@ func (v *Vault) commit(ev audit.Event, fn func(t *tx) error) error {
 		v.log.SetKeys(v.m.auditKeys())
 	}
 	previous.wipe()
-	return nil
+	return notDurable
 }
 
 func randomBytes(n int) ([]byte, error) {
@@ -1000,7 +1039,7 @@ func (v *Vault) Put(it *Item) error {
 		it.Type = TypeSecret
 	}
 	if !it.Type.valid() {
-		return errors.New("vault: unknown item type")
+		return fmt.Errorf("%w: unknown item type", ErrInvalidInput)
 	}
 	if len(it.Tags) > maxItemTags {
 		return errors.New("vault: too many tags")

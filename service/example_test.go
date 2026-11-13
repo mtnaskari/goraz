@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/mtnaskari/goraz/audit"
-	"github.com/mtnaskari/goraz/internal/kdf"
 	"github.com/mtnaskari/goraz/secret"
 	"github.com/mtnaskari/goraz/service"
 	"github.com/mtnaskari/goraz/vault"
@@ -26,7 +25,7 @@ func Example() {
 	// On the operator's machine.
 	main, _, err := vault.Create(filepath.Join(dir, "main.goraz"), vault.CreateOptions{
 		Passphrase: []byte("violet granite ocean drift lantern"),
-		Profile:    kdf.Interactive,
+		Profile:    vault.ProfileInteractive,
 		Options:    vault.Options{StateDir: filepath.Join(dir, "state")},
 	})
 	if err != nil {

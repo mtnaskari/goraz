@@ -19,7 +19,6 @@ import (
 	"github.com/mtnaskari/goraz/audit"
 	"github.com/mtnaskari/goraz/internal/format"
 	"github.com/mtnaskari/goraz/internal/fsutil"
-	"github.com/mtnaskari/goraz/internal/state"
 	"github.com/mtnaskari/goraz/secret"
 	"github.com/mtnaskari/goraz/token"
 	"github.com/mtnaskari/goraz/vault"
@@ -31,6 +30,11 @@ var (
 	ErrStale = errors.New("service: the vault file can't be reloaded and the last good copy is too old")
 	// ErrClosed means the client has been closed.
 	ErrClosed = errors.New("service: closed")
+	// ErrInvalidOptions means Options or a key file's contents are wrong.
+	ErrInvalidOptions = errors.New("service: invalid options")
+	// ErrUnsafeKeyFile means the key file's type, owner or mode is unsafe. The
+	// message says how to fix it on Docker, Kubernetes and systemd.
+	ErrUnsafeKeyFile = errors.New("service: " + keyFileHelp)
 )
 
 // ErrExpired means the file's authenticated validity window has passed.
@@ -69,7 +73,7 @@ type keyFile string
 func (k keyFile) Keys() ([][]byte, error) {
 	b, err := fsutil.ReadFile(string(k), maxKeyFile, fsutil.Policy{FollowSymlinks: true, AllowRootOwner: true, DenyOtherRead: true})
 	if errors.Is(err, fsutil.ErrUnsafeFile) {
-		return nil, errors.New("service: " + keyFileHelp)
+		return nil, ErrUnsafeKeyFile
 	}
 	if err != nil {
 		return nil, err
@@ -141,7 +145,7 @@ func ParseKeys(b []byte) ([][]byte, error) {
 		out = append(out, bytes.Clone(line))
 	}
 	if len(out) == 0 || len(out) > maxKeysPerFile {
-		return nil, errors.New("service: a key file must hold between one and four keys")
+		return nil, fmt.Errorf("%w: a key file must hold between one and four keys", ErrInvalidOptions)
 	}
 	return out, nil
 }
@@ -172,10 +176,10 @@ type Options struct {
 // Client is a running service client. It is safe for concurrent use.
 type Client struct {
 	o       Options
-	st      *state.Memory
+	st      *vault.MemoryState
 	current atomic.Pointer[vault.Vault]
 	hash    atomic.Pointer[[32]byte]
-	lastOK  atomic.Int64 // Unix nanoseconds of the last successful check.
+	lastOK  atomic.Pointer[time.Time] // Keeps the monotonic reading, so a wall-clock jump can't change staleness.
 	stop    chan struct{}
 	done    chan struct{}
 	closed  atomic.Bool
@@ -185,13 +189,13 @@ type Client struct {
 // Open reads the vault and starts watching it. It fails if the first read fails.
 func Open(ctx context.Context, o Options) (*Client, error) {
 	if o.Path == "" || o.Key == nil {
-		return nil, errors.New("service: Path and Key are required")
+		return nil, fmt.Errorf("%w: Path and Key are required", ErrInvalidOptions)
 	}
 	if o.Interval == 0 {
 		o.Interval = DefaultInterval
 	}
 	if o.Interval < 0 {
-		return nil, errors.New("service: Interval can't be negative")
+		return nil, fmt.Errorf("%w: Interval can't be negative", ErrInvalidOptions)
 	}
 	if o.MaxStale == 0 {
 		o.MaxStale = DefaultMaxStale
@@ -199,7 +203,7 @@ func Open(ctx context.Context, o Options) (*Client, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	c := &Client{o: o, st: state.NewMemory(), stop: make(chan struct{}), done: make(chan struct{})}
+	c := &Client{o: o, st: vault.NewMemoryState(), stop: make(chan struct{}), done: make(chan struct{})}
 	if err := c.reload(); err != nil {
 		return nil, err
 	}
@@ -252,7 +256,8 @@ func (c *Client) reloadLocked() (uint64, bool, error) {
 	}
 	sum := sha256.Sum256(data)
 	if prev := c.hash.Load(); prev != nil && *prev == sum {
-		c.lastOK.Store(c.o.Now().UnixNano())
+		now := c.o.Now()
+		c.lastOK.Store(&now)
 		return 0, false, nil
 	}
 	keys, err := c.o.Key.Keys()
@@ -265,14 +270,15 @@ func (c *Client) reloadLocked() (uint64, bool, error) {
 		}
 	}()
 	next, err := vault.OpenService(data, vault.WithMachineKeys(keys...), vault.Options{
-		Audit: c.o.Audit, State: c.st, MinGeneration: c.o.MinGeneration, Now: c.o.Now,
+		Audit: c.o.Audit, Memory: c.st, MinGeneration: c.o.MinGeneration, Now: c.o.Now,
 	})
 	if err != nil {
 		return 0, false, err
 	}
 	old := c.current.Swap(next)
 	c.hash.Store(&sum)
-	c.lastOK.Store(c.o.Now().UnixNano())
+	now := c.o.Now()
+	c.lastOK.Store(&now)
 	if old != nil {
 		// In-flight readers hold only values they already copied out, and a closed
 		// vault returns an error, so a racing Get is retried against the new one.
@@ -310,7 +316,7 @@ func (c *Client) check() (*vault.Vault, error) {
 	if until := v.ValidUntil(); until != nil && !now.Before(*until) {
 		return nil, ErrExpired
 	}
-	if c.o.MaxStale != NoStaleLimit && now.Sub(time.Unix(0, c.lastOK.Load())) > c.o.MaxStale {
+	if c.o.MaxStale != NoStaleLimit && now.Sub(*c.lastOK.Load()) > c.o.MaxStale {
 		return nil, ErrStale
 	}
 	return v, nil
@@ -396,6 +402,10 @@ func (s snapshotStore) List(ctx context.Context) ([]token.Record, error) {
 type Verifier struct {
 	c    *Client
 	sink audit.Sink
+
+	mu   sync.Mutex
+	for_ *vault.Vault // The snapshot the cached manager was built for.
+	m    *token.Manager
 }
 
 // Verifier returns a token verifier. A nil sink means the client's own. Stale or
@@ -407,7 +417,7 @@ func (c *Client) Verifier(sink audit.Sink) (*Verifier, error) {
 		sink = c.o.Audit
 	}
 	if sink == nil {
-		return nil, errors.New("service: an audit sink is required; use audit.Discard to opt out")
+		return nil, fmt.Errorf("%w: an audit sink is required; use audit.Discard to opt out", ErrInvalidOptions)
 	}
 	return &Verifier{c: c, sink: sink}, nil
 }
@@ -418,9 +428,32 @@ func (t *Verifier) Verify(ctx context.Context, presented []byte, required ...str
 	if err != nil {
 		return token.Record{}, token.ErrUnavailable
 	}
-	m, err := token.New(token.Config{Keys: v.VerifierKeys(), Store: snapshotStore{t.c}, Sink: t.sink, Now: t.c.o.Now})
+	m, err := t.manager(v)
 	if err != nil {
 		return token.Record{}, err
 	}
 	return m.Verify(ctx, presented, required...)
+}
+
+// manager returns a token manager for the snapshot, building one only after a
+// reload. token.New copies the keys, so this copy is cleared at once. An old manager
+// isn't wiped, because a concurrent Verify may still be using it.
+func (t *Verifier) manager(v *vault.Vault) (*token.Manager, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.for_ == v && t.m != nil {
+		return t.m, nil
+	}
+	keys := v.VerifierKeys()
+	defer func() {
+		for _, k := range keys {
+			clear(k.Key)
+		}
+	}()
+	m, err := token.New(token.Config{Keys: keys, Store: snapshotStore{t.c}, Sink: t.sink, Now: t.c.o.Now})
+	if err != nil {
+		return nil, err
+	}
+	t.for_, t.m = v, m
+	return m, nil
 }

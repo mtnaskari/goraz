@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -42,13 +43,13 @@ func findClip() (*clipTool, error) {
 }
 
 func (t *clipTool) copyValue(val []byte) error {
-	c := exec.Command(t.copyArgs[0], t.copyArgs[1:]...) // #nosec G204 -- fixed paths from findClip.
+	c := exec.CommandContext(context.Background(), t.copyArgs[0], t.copyArgs[1:]...) // #nosec G204 -- fixed paths from findClip.
 	c.Stdin = bytes.NewReader(val)
 	return c.Run()
 }
 
 func (t *clipTool) paste() ([]byte, error) {
-	return exec.Command(t.pasteArgs[0], t.pasteArgs[1:]...).Output() // #nosec G204 -- fixed paths from findClip.
+	return exec.CommandContext(context.Background(), t.pasteArgs[0], t.pasteArgs[1:]...).Output() // #nosec G204 -- fixed paths from findClip.
 }
 
 func (a *app) cmdClip(args []string) error {
@@ -99,8 +100,8 @@ func (a *app) cmdClip(args []string) error {
 	// The clearing process holds only a hash, sent on stdin rather than in its
 	// arguments, because a hash of a weak password could be guessed.
 	sum := sha256.Sum256(val)
-	cl := exec.Command(self, "__clipclear", "--after", after.String()) // #nosec G204 -- this program itself.
-	cl.SysProcAttr = &syscall.SysProcAttr{Setsid: true}                // It outlives this command and its terminal.
+	cl := exec.CommandContext(context.Background(), self, "__clipclear", "--after", after.String()) // #nosec G204 -- this program itself.
+	cl.SysProcAttr = &syscall.SysProcAttr{Setsid: true}                                             // It outlives this command and its terminal.
 	in, err := cl.StdinPipe()
 	if err != nil {
 		return errClipTimer

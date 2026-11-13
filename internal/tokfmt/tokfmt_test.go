@@ -2,6 +2,7 @@ package tokfmt
 
 import (
 	"bytes"
+	"math/big"
 	"strings"
 	"testing"
 )
@@ -83,8 +84,10 @@ func flip(c byte) string {
 
 func TestNonCanonicalBodyRejected(t *testing.T) {
 	// A body above 2^384 must be refused even with a correct checksum.
-	head := "goraz_st_" + strings.Repeat("z", bodyChars)
-	if _, err := Parse([]byte(head + check(head))); err == nil {
+	head := []byte("goraz_st_" + strings.Repeat("z", bodyChars))
+	var sum [checkChars]byte
+	checksum(sum[:], head)
+	if _, err := Parse(append(head, sum[:]...)); err == nil {
 		t.Fatal("oversized body accepted")
 	}
 }
@@ -130,16 +133,17 @@ func TestRecoveryRoundTripAndTyping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(s, "GORAZ-RC-") {
+	if !strings.HasPrefix(string(s), "GORAZ-RC-") {
 		t.Fatalf("prefix: %s", s)
 	}
+	str := string(s)
 	forms := []string{
-		s,
-		strings.ToLower(s),
-		strings.ReplaceAll(s, "-", ""),
-		strings.ReplaceAll(s, "-", " "),
-		strings.ReplaceAll(s, "0", "O"),
-		strings.ReplaceAll(s, "1", "l"),
+		str,
+		strings.ToLower(str),
+		strings.ReplaceAll(str, "-", ""),
+		strings.ReplaceAll(str, "-", " "),
+		strings.ReplaceAll(str, "0", "O"),
+		strings.ReplaceAll(str, "1", "l"),
 	}
 	for _, f := range forms {
 		got, err := ParseRecovery([]byte(f))
@@ -154,10 +158,11 @@ func TestRecoveryRoundTripAndTyping(t *testing.T) {
 }
 
 func TestRecoveryRejects(t *testing.T) {
-	s, err := EncodeRecovery(make([]byte, 32))
+	enc, err := EncodeRecovery(make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s := string(enc)
 	i := len(s) - 1
 	wrong := s[:i] + "Z"
 	if s[i] == 'Z' {
@@ -202,7 +207,7 @@ func FuzzParseRecovery(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	f.Add([]byte(s))
+	f.Add(s)
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		code, err := ParseRecovery(b)
@@ -210,4 +215,54 @@ func FuzzParseRecovery(f *testing.F) {
 			t.Fatal("wrong code size")
 		}
 	})
+}
+
+// The new arithmetic must match an independent big-integer implementation.
+func TestBase62MatchesBigInt(t *testing.T) {
+	for _, fill := range []byte{0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff} {
+		raw := bytes.Repeat([]byte{fill}, rawSize)
+		raw[0] ^= 0x5a
+		got := make([]byte, bodyChars)
+		encodeBase62(got, raw)
+		v := new(big.Int).SetBytes(raw)
+		want := make([]byte, bodyChars)
+		mod := new(big.Int)
+		b62 := big.NewInt(62)
+		for i := bodyChars - 1; i >= 0; i-- {
+			v.DivMod(v, b62, mod)
+			want[i] = alphabet[mod.Int64()]
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("fill %x: got %s want %s", fill, got, want)
+		}
+		back := make([]byte, rawSize)
+		if !decodeBase62(back, got) || !bytes.Equal(back, raw) {
+			t.Fatalf("fill %x: round trip failed", fill)
+		}
+	}
+}
+
+// A golden token freezes the format, so existing tokens keep verifying.
+func TestTokenGolden(t *testing.T) {
+	id := bytes.Repeat([]byte{0x11}, IDSize)
+	sec := bytes.Repeat([]byte{0xee}, SecretSize)
+	tok, err := Encode(DefaultPrefix, KindService, id, sec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "goraz_st_0VWylGGClvhya2uxX1Da7kqyY40aauNFgHMxUcQPQosAHItGY7GqkWuR1mpFOdH262FyQXd"
+	if string(tok) != want {
+		t.Fatalf("token format changed: %s", tok)
+	}
+}
+
+func TestRecoveryGolden(t *testing.T) {
+	r, err := EncodeRecovery(bytes.Repeat([]byte{0x5a}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "GORAZ-RC-B9D5-MPJT-B9D5-MPJT-B9D5-MPJT-B9D5-MPJT-B9D5-MPJT-B9D5-MPJT-B9D6-1FR"
+	if string(r) != want {
+		t.Fatalf("recovery code format changed: %s", r)
+	}
 }

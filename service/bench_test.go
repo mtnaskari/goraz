@@ -7,17 +7,18 @@ import (
 	"time"
 
 	"github.com/mtnaskari/goraz/audit"
-	"github.com/mtnaskari/goraz/internal/kdf"
 	"github.com/mtnaskari/goraz/secret"
 	"github.com/mtnaskari/goraz/token"
 	"github.com/mtnaskari/goraz/vault"
 )
 
-func benchClient(b *testing.B) (*Client, []byte) {
+func benchClient(b *testing.B) (*Client, []byte) { return benchClientT(b) }
+
+func benchClientT(b testing.TB) (*Client, []byte) {
 	b.Helper()
 	dir := b.TempDir()
 	v, _, err := vault.Create(filepath.Join(dir, "m"), vault.CreateOptions{
-		Passphrase: []byte(pass), Profile: kdf.Interactive, Options: vault.Options{StateDir: filepath.Join(dir, "s")},
+		Passphrase: []byte(pass), Profile: vault.ProfileInteractive, Options: vault.Options{StateDir: filepath.Join(dir, "s")},
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -52,7 +53,7 @@ func benchClient(b *testing.B) (*Client, []byte) {
 
 func BenchmarkServiceValue(b *testing.B) {
 	c, _ := benchClient(b)
-	b.ResetTimer()
+	b.ReportAllocs()
 	for b.Loop() {
 		if _, err := c.Value("prod/api/x"); err != nil {
 			b.Fatal(err)
@@ -67,7 +68,7 @@ func BenchmarkServiceVerifyToken(b *testing.B) {
 		b.Fatal(err)
 	}
 	ctx := context.Background()
-	b.ResetTimer()
+	b.ReportAllocs()
 	for b.Loop() {
 		if _, err := v.Verify(ctx, tok, "s"); err != nil {
 			b.Fatal(err)

@@ -128,9 +128,9 @@ func TestClearProcessHashIsNotOnCommandLine(t *testing.T) {
 // The tests below run the real program as separate processes.
 
 var (
-	binOnce sync.Once
-	binPath string
-	binErr  error
+	binOnce  sync.Once
+	binPath  string
+	errBuild error
 )
 
 func buildBinary(t *testing.T) string {
@@ -141,17 +141,17 @@ func buildBinary(t *testing.T) string {
 	binOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "goraz-e2e")
 		if err != nil {
-			binErr = err
+			errBuild = err
 			return
 		}
 		binPath = filepath.Join(dir, "goraz")
 		out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput()
 		if err != nil {
-			binErr = fmt.Errorf("%w: %s", err, out)
+			errBuild = fmt.Errorf("%w: %s", err, out)
 		}
 	})
-	if binErr != nil {
-		t.Fatal(binErr)
+	if errBuild != nil {
+		t.Fatal(errBuild)
 	}
 	return binPath
 }

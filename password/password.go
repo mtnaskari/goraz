@@ -145,7 +145,7 @@ func CheckMaster(p []byte) error {
 		}
 	}
 	compact := strings.Map(func(r rune) rune {
-		if r < utf8.RuneSelf && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') {
+		if r < utf8.RuneSelf && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
 			return -1
 		}
 		return r

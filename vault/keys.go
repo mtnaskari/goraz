@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,11 +23,37 @@ import (
 	"github.com/mtnaskari/goraz/token"
 )
 
+// Profile names a key derivation cost. Only these values exist, so a file can't
+// choose a weaker cost than the allowlist permits.
+type Profile string
+
+// Profiles, from cheapest to most expensive. ProfileStrong is the default.
+const (
+	ProfileInteractive Profile = "interactive" // Argon2id, 64 MiB, for constrained hosts.
+	ProfileStandard    Profile = "standard"    // Argon2id, 256 MiB.
+	ProfileStrong      Profile = "strong"      // Argon2id, 1 GiB.
+	ProfileMax         Profile = "max"         // Argon2id, 2 GiB.
+)
+
+// ErrUnknownProfile is returned for a profile name that doesn't exist.
+var ErrUnknownProfile = errors.New("vault: unknown KDF profile; use interactive, standard, strong or max")
+
+func (p Profile) params() (kdf.Params, error) {
+	if p == "" {
+		return kdf.Default.Params, nil
+	}
+	prof, err := kdf.ProfileByName(string(p))
+	if err != nil {
+		return kdf.Params{}, ErrUnknownProfile
+	}
+	return prof.Params, nil
+}
+
 // CreateOptions configures Create.
 type CreateOptions struct {
 	Passphrase []byte
-	Keyfile    []byte // Optional: exactly 32 random bytes.
-	Profile    kdf.Profile
+	Keyfile    []byte  // Optional: exactly 32 random bytes.
+	Profile    Profile // Defaults to ProfileStrong.
 	// AcceptWeakPassphrase skips the passphrase policy.
 	AcceptWeakPassphrase bool
 	Options              Options
@@ -73,29 +100,32 @@ func passphraseSlot(vaultID [format.IDSize]byte, vmk, pass, keyfile []byte, p kd
 	return s, err
 }
 
-func recoverySlot(vaultID [format.IDSize]byte, vmk []byte) (format.Slot, string, error) {
+func recoverySlot(vaultID [format.IDSize]byte, vmk []byte) (format.Slot, []byte, error) {
 	s := format.Slot{Type: format.SlotRecovery}
 	id, err := randomBytes(format.IDSize)
 	if err != nil {
-		return s, "", err
+		return s, nil, err
 	}
 	copy(s.ID[:], id)
 	code, err := randomBytes(32)
 	if err != nil {
-		return s, "", err
+		return s, nil, err
 	}
 	defer clear(code)
 	key, err := kdf.RecoveryKey(code, vaultID[:])
 	if err != nil {
-		return s, "", err
+		return s, nil, err
 	}
 	defer clear(key)
 	s.Blob, err = envelope.Seal(key, envelope.DomainSlot, s.Context(vaultID), vmk)
 	if err != nil {
-		return s, "", err
+		return s, nil, err
 	}
 	text, err := tokfmt.EncodeRecovery(code)
-	return s, text, err
+	if err != nil {
+		return s, nil, err
+	}
+	return s, text, nil
 }
 
 func machineSlot(vaultID [format.IDSize]byte, vmk, slotID, sec []byte) (format.Slot, error) {
@@ -140,10 +170,11 @@ func Create(path string, o CreateOptions) (*Vault, secret.Secret, error) {
 		}
 	}
 	if len(o.Keyfile) != 0 && len(o.Keyfile) != kdf.KeyfileSize {
-		return nil, secret.Secret{}, errors.New("vault: a key file must be exactly 32 bytes")
+		return nil, secret.Secret{}, fmt.Errorf("%w: a key file must be exactly 32 bytes", ErrInvalidInput)
 	}
-	if o.Profile == (kdf.Profile{}) {
-		o.Profile = kdf.Default
+	params, err := o.Profile.params()
+	if err != nil {
+		return nil, secret.Secret{}, err
 	}
 	opts := o.Options
 	if opts.StateDir == "" {
@@ -162,7 +193,7 @@ func Create(path string, o CreateOptions) (*Vault, secret.Secret, error) {
 	}
 	defer lock.Release()
 	if _, err := os.Lstat(path); err == nil {
-		return nil, secret.Secret{}, errors.New("vault: a file already exists at this path")
+		return nil, secret.Secret{}, fmt.Errorf("vault: a file already exists at this path: %w", fs.ErrExist)
 	}
 
 	var h format.Header
@@ -177,7 +208,7 @@ func Create(path string, o CreateOptions) (*Vault, secret.Secret, error) {
 		return nil, secret.Secret{}, err
 	}
 	defer clear(vmk)
-	ps, err := passphraseSlot(h.VaultID, vmk, o.Passphrase, o.Keyfile, o.Profile.Params)
+	ps, err := passphraseSlot(h.VaultID, vmk, o.Passphrase, o.Keyfile, params)
 	if err != nil {
 		return nil, secret.Secret{}, err
 	}
@@ -209,7 +240,7 @@ func Create(path string, o CreateOptions) (*Vault, secret.Secret, error) {
 	}
 	lock.Release()
 	// From here the file exists, so the recovery code is returned even with an error.
-	shown := secret.New([]byte(code))
+	shown := secret.Adopt(code)
 	v, err := Open(path, WithPassphrase(o.Passphrase, o.Keyfile), opts)
 	if err != nil {
 		return nil, shown, err
@@ -224,17 +255,18 @@ func Create(path string, o CreateOptions) (*Vault, secret.Secret, error) {
 // ChangePassphrase replaces the passphrase slot. It does not revoke the old
 // passphrase: anyone holding it and an old copy of the file still gets the master
 // key, which reads and can forge current files. Use Rekey after a suspected exposure.
-func (v *Vault) ChangePassphrase(pass, keyfile []byte, p kdf.Profile, acceptWeak bool) error {
+func (v *Vault) ChangePassphrase(pass, keyfile []byte, p Profile, acceptWeak bool) error {
 	if !acceptWeak {
 		if err := password.CheckMaster(pass); err != nil {
 			return err
 		}
 	}
-	if p == (kdf.Profile{}) {
-		p = kdf.Default
+	params, err := p.params()
+	if err != nil {
+		return err
 	}
 	return v.commit(audit.Event{Type: audit.EventSlotChange, Outcome: audit.OK, Actor: v.actor}, func(t *tx) error {
-		s, err := passphraseSlot(t.hdr.VaultID, v.vmk(), pass, keyfile, p.Params)
+		s, err := passphraseSlot(t.hdr.VaultID, v.vmk(), pass, keyfile, params)
 		if err != nil {
 			return err
 		}
@@ -284,7 +316,7 @@ func (v *Vault) AddMachineKey() (secret.Secret, error) {
 	var key secret.Secret
 	err := v.commit(audit.Event{Type: audit.EventSlotChange, Outcome: audit.OK, Actor: v.actor}, func(t *tx) error {
 		if len(t.hdr.Slots) >= format.MaxSlots {
-			return errors.New("vault: too many slots")
+			return fmt.Errorf("%w: too many slots", ErrLimit)
 		}
 		s, k, err := newMachineSlot(t.hdr.VaultID, v.vmk())
 		if err != nil {
@@ -302,14 +334,14 @@ func (v *Vault) AddRecoveryCode() (secret.Secret, error) {
 	var code secret.Secret
 	err := v.commit(audit.Event{Type: audit.EventSlotChange, Outcome: audit.OK, Actor: v.actor}, func(t *tx) error {
 		if len(t.hdr.Slots) >= format.MaxSlots {
-			return errors.New("vault: too many slots")
+			return fmt.Errorf("%w: too many slots", ErrLimit)
 		}
 		s, c, err := recoverySlot(t.hdr.VaultID, v.vmk())
 		if err != nil {
 			return err
 		}
 		t.hdr.Slots = append(t.hdr.Slots, s)
-		code = secret.New([]byte(c))
+		code = secret.Adopt(c)
 		return nil
 	})
 	return code, err
@@ -320,7 +352,7 @@ func (v *Vault) AddRecoveryCode() (secret.Secret, error) {
 func (v *Vault) RemoveSlot(id string) error {
 	return v.commit(audit.Event{Type: audit.EventSlotChange, Outcome: audit.OK, Actor: v.actor}, func(t *tx) error {
 		if len(t.hdr.Slots) == 1 {
-			return errors.New("vault: can't remove the last slot")
+			return fmt.Errorf("%w: can't remove the last slot", ErrInvalidInput)
 		}
 		for i := range t.hdr.Slots {
 			if hex.EncodeToString(t.hdr.Slots[i].ID[:]) == id {
@@ -328,7 +360,7 @@ func (v *Vault) RemoveSlot(id string) error {
 				return nil
 			}
 		}
-		return errors.New("vault: no such slot")
+		return fmt.Errorf("%w: no such slot", ErrNotFound)
 	})
 }
 
@@ -336,7 +368,7 @@ func (v *Vault) RemoveSlot(id string) error {
 type RekeyOptions struct {
 	Passphrase []byte
 	Keyfile    []byte
-	Profile    kdf.Profile
+	Profile    Profile // Defaults to ProfileStrong.
 	// AcceptWeakPassphrase skips the passphrase policy.
 	AcceptWeakPassphrase bool
 	// KeepTokens keeps the verifier keys, for a routine rekey with no suspected
@@ -365,10 +397,11 @@ func (v *Vault) Rekey(o RekeyOptions) error {
 		}
 	}
 	if o.Confirm == nil {
-		return errors.New("vault: a Rekey needs Confirm, so the new recovery code can't be lost")
+		return fmt.Errorf("%w: a Rekey needs Confirm, so the new recovery code can't be lost", ErrInvalidInput)
 	}
-	if o.Profile == (kdf.Profile{}) {
-		o.Profile = kdf.Default
+	params, err := o.Profile.params()
+	if err != nil {
+		return err
 	}
 	return v.commit(audit.Event{Type: audit.EventRekey, Outcome: audit.OK, Actor: v.actor}, func(t *tx) error {
 		newVMK, err := randomBytes(32)
@@ -382,7 +415,7 @@ func (v *Vault) Rekey(o RekeyOptions) error {
 		}
 		t.keys = mem
 
-		ps, err := passphraseSlot(t.hdr.VaultID, newVMK, o.Passphrase, o.Keyfile, o.Profile.Params)
+		ps, err := passphraseSlot(t.hdr.VaultID, newVMK, o.Passphrase, o.Keyfile, params)
 		if err != nil {
 			return err
 		}
@@ -391,7 +424,7 @@ func (v *Vault) Rekey(o RekeyOptions) error {
 			return err
 		}
 		t.hdr.Slots = []format.Slot{ps, rs}
-		res := RekeyResult{RecoveryCode: secret.New([]byte(code))}
+		res := RekeyResult{RecoveryCode: secret.Adopt(code)}
 		for range o.ReissueMachine {
 			s, k, err := newMachineSlot(t.hdr.VaultID, newVMK)
 			if err != nil {
@@ -473,7 +506,7 @@ func rotateVerifier(k *keySet, now time.Time, overlap time.Duration) error {
 // for the overlap period, and stop at once with an overlap of zero.
 func (v *Vault) RotateVerifierKey(overlap time.Duration) error {
 	if overlap < 0 {
-		return errors.New("vault: overlap can't be negative")
+		return fmt.Errorf("%w: overlap can't be negative", ErrInvalidInput)
 	}
 	return v.commit(audit.Event{Type: audit.EventKeyRotate, Outcome: audit.OK, Actor: v.actor}, func(t *tx) error {
 		return rotateVerifier(&t.m.Keys, v.now(), overlap)
@@ -624,13 +657,13 @@ func (v *Vault) ExpiringTokens(d time.Duration) ([]Metadata, error) {
 }
 
 // ResetLocalState forgets this device's record of a vault.
-func ResetLocalState(stateDir string, id [format.IDSize]byte) error {
+func ResetLocalState(stateDir string, id [IDSize]byte) error {
 	return (&state.File{Dir: stateDir}).Reset(id)
 }
 
-// VaultIDFromFile reads a vault's ID without unlocking it. The value isn't
+// IDFromFile reads a vault's ID without unlocking it. The value isn't
 // authenticated.
-func VaultIDFromFile(path string) ([format.IDSize]byte, error) {
+func IDFromFile(path string) ([IDSize]byte, error) {
 	data, err := fsutil.ReadFile(path, format.MaxFileSize, fsutil.Policy{})
 	if err != nil {
 		return [format.IDSize]byte{}, err

@@ -221,7 +221,7 @@ func TestTokenFlow(t *testing.T) {
 	h.fail("garbage\n", "token", "verify")
 
 	list := h.ok("", "token", "list")
-	id := strings.Split(list, "\t")[0]
+	id, _, _ := strings.Cut(list, "\t")
 	if strings.Contains(list, tok) {
 		t.Error("list shows the token")
 	}
@@ -703,4 +703,52 @@ func TestWeakPassphraseOverrideWarns(t *testing.T) {
 	if code != 0 || !strings.Contains(errb, "doesn't meet the policy") {
 		t.Errorf("%d %s", code, errb)
 	}
+}
+
+func TestUsageErrorsExitTwoAndPrintOnce(t *testing.T) {
+	h := newHarness(t)
+	h.init()
+	_, errb, code := h.raw("", "get", "--bogus")
+	if code != exitUsage {
+		t.Errorf("unknown flag: exit %d", code)
+	}
+	if strings.Count(errb, "bogus") != 1 {
+		t.Errorf("the error was printed %d times: %s", strings.Count(errb, "bogus"), errb)
+	}
+	for _, args := range [][]string{
+		{"ls", "extra"},
+		{"export", "--out", "x", "extra"},
+		{"doctor", "extra"},
+		{"report", "extra"},
+		{"generate", "extra"},
+		{"slot", "list", "extra"},
+		{"audit", "verify", "extra"},
+		{"token", "list", "extra"},
+		{"service", "list", "extra"},
+		{"get"},
+		{"slot", "remove"},
+	} {
+		full := append(append([]string{}, args...), "--passphrase-fd", h.fd(pass+"\n"))
+		if _, _, code := h.raw("", full...); code != exitUsage {
+			t.Errorf("%v: exit %d, want %d", args, code, exitUsage)
+		}
+	}
+	if _, _, code := h.raw("", "get", "missing", "--passphrase-fd", h.fd(pass+"\n")); code != exitError {
+		t.Errorf("a runtime error: exit %d", code)
+	}
+}
+
+func TestExportNeverReplacesAFile(t *testing.T) {
+	h := newHarness(t)
+	h.init()
+	out := filepath.Join(h.dir, "out.json")
+	link := filepath.Join(h.dir, "link.json")
+	if err := os.Symlink(filepath.Join(h.dir, "target"), link); err != nil {
+		t.Fatal(err)
+	}
+	h.fail("", "export", "--out", link)
+	if _, err := os.Lstat(filepath.Join(h.dir, "target")); err == nil {
+		t.Error("export followed a symlink")
+	}
+	h.ok("", "export", "--out", out)
 }

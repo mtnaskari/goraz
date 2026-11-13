@@ -19,7 +19,6 @@ import (
 	"github.com/mtnaskari/goraz/internal/format"
 	"github.com/mtnaskari/goraz/internal/fsutil"
 	"github.com/mtnaskari/goraz/internal/kdf"
-	"github.com/mtnaskari/goraz/internal/state"
 	"github.com/mtnaskari/goraz/secret"
 	"github.com/mtnaskari/goraz/token"
 )
@@ -38,7 +37,7 @@ func newEnv(t testing.TB) (*env, *Vault) {
 	dir := t.TempDir()
 	e := &env{dir: dir, path: filepath.Join(dir, "v.goraz"), stateDir: filepath.Join(dir, "state")}
 	v, code, err := Create(e.path, CreateOptions{
-		Passphrase: []byte(testPass), Profile: kdf.Interactive, Options: Options{StateDir: e.stateDir},
+		Passphrase: []byte(testPass), Profile: ProfileInteractive, Options: Options{StateDir: e.stateDir},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +113,7 @@ func TestCreateReopenRoundTrip(t *testing.T) {
 
 func TestPassphrasePolicyAtCreate(t *testing.T) {
 	dir := t.TempDir()
-	o := CreateOptions{Passphrase: []byte("short"), Profile: kdf.Interactive, Options: Options{StateDir: dir}}
+	o := CreateOptions{Passphrase: []byte("short"), Profile: ProfileInteractive, Options: Options{StateDir: dir}}
 	if _, _, err := Create(filepath.Join(dir, "a"), o); err == nil {
 		t.Error("weak passphrase accepted")
 	}
@@ -166,7 +165,7 @@ func TestKeyfile(t *testing.T) {
 	dir := t.TempDir()
 	kf := bytes.Repeat([]byte{7}, 32)
 	p := filepath.Join(dir, "v")
-	v, _, err := Create(p, CreateOptions{Passphrase: []byte(testPass), Keyfile: kf, Profile: kdf.Interactive, Options: Options{StateDir: dir}})
+	v, _, err := Create(p, CreateOptions{Passphrase: []byte(testPass), Keyfile: kf, Profile: ProfileInteractive, Options: Options{StateDir: dir}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +178,7 @@ func TestKeyfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Close()
-	if _, _, err := Create(filepath.Join(dir, "w"), CreateOptions{Passphrase: []byte(testPass), Keyfile: kf[:10], Profile: kdf.Interactive, Options: Options{StateDir: dir}}); err == nil {
+	if _, _, err := Create(filepath.Join(dir, "w"), CreateOptions{Passphrase: []byte(testPass), Keyfile: kf[:10], Profile: ProfileInteractive, Options: Options{StateDir: dir}}); err == nil {
 		t.Error("short key file accepted")
 	}
 }
@@ -754,9 +753,9 @@ func TestStateTamperRefused(t *testing.T) {
 	if _, err := e.open(t, Options{}); err != nil {
 		t.Errorf("after reset: %v", err)
 	}
-	got, err := VaultIDFromFile(e.path)
+	got, err := IDFromFile(e.path)
 	if err != nil || got != id {
-		t.Errorf("VaultIDFromFile: %v", err)
+		t.Errorf("IDFromFile: %v", err)
 	}
 }
 
@@ -778,7 +777,7 @@ func TestRekeyedFileReachesOtherDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := a.Rekey(RekeyOptions{
-		Passphrase: []byte(testPass), Profile: kdf.Interactive,
+		Passphrase: []byte(testPass), Profile: ProfileInteractive,
 		Confirm: func(RekeyResult) error { return nil },
 	}); err != nil {
 		t.Fatal(err)
@@ -900,10 +899,10 @@ func TestPassphraseChangeDoesNotRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	const next = "amber canyon whisper meadow copper"
-	if err := v.ChangePassphrase([]byte(next), nil, kdf.Interactive, false); err != nil {
+	if err := v.ChangePassphrase([]byte(next), nil, ProfileInteractive, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.ChangePassphrase([]byte("short"), nil, kdf.Interactive, false); err == nil {
+	if err := v.ChangePassphrase([]byte("short"), nil, ProfileInteractive, false); err == nil {
 		t.Error("weak passphrase accepted")
 	}
 	put(t, v, "a", "2")
@@ -978,7 +977,7 @@ func TestRekeyRevokes(t *testing.T) {
 	var shown RekeyResult
 	const next = "amber canyon whisper meadow copper"
 	err = v.Rekey(RekeyOptions{
-		Passphrase: []byte(next), Profile: kdf.Interactive, ReissueMachine: 1,
+		Passphrase: []byte(next), Profile: ProfileInteractive, ReissueMachine: 1,
 		Confirm: func(r RekeyResult) error { shown = r; return nil },
 	})
 	if err != nil {
@@ -1063,7 +1062,7 @@ func TestRekeyKeepTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := v.Rekey(RekeyOptions{
-		Passphrase: []byte(testPass), Profile: kdf.Interactive, KeepTokens: true,
+		Passphrase: []byte(testPass), Profile: ProfileInteractive, KeepTokens: true,
 		Confirm: func(RekeyResult) error { return nil },
 	}); err != nil {
 		t.Fatal(err)
@@ -1086,7 +1085,7 @@ func TestRekeyConfirmFailureChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	stop := errors.New("not saved")
-	err = v.Rekey(RekeyOptions{Passphrase: []byte(testPass), Profile: kdf.Interactive, Confirm: func(RekeyResult) error { return stop }})
+	err = v.Rekey(RekeyOptions{Passphrase: []byte(testPass), Profile: ProfileInteractive, Confirm: func(RekeyResult) error { return stop }})
 	if !errors.Is(err, stop) {
 		t.Fatalf("err = %v", err)
 	}
@@ -1370,8 +1369,19 @@ func FuzzOpenReadOnly(f *testing.F) {
 	f.Add(data)
 	f.Add([]byte{})
 	f.Add([]byte(format.Magic))
+	bad, err := filepath.Glob(filepath.Join(badDir, "*.goraz"))
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, p := range bad {
+		b, err := os.ReadFile(p) // #nosec G304 -- test data.
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(b)
+	}
 	f.Fuzz(func(t *testing.T, b []byte) {
-		r, err := openReadOnly(b, WithMachineKeys(key), Options{Audit: audit.Discard, State: state.NewMemory()})
+		r, err := openReadOnly(b, WithMachineKeys(key), Options{Audit: audit.Discard, Memory: NewMemoryState()})
 		if err != nil {
 			return
 		}
@@ -1438,7 +1448,7 @@ func TestOpenServiceRefusesMainVault(t *testing.T) {
 	if _, err := OpenService(data, WithMachineKeys(key), Options{Audit: audit.Discard}); !errors.Is(err, ErrNotServiceVault) {
 		t.Errorf("err = %v", err)
 	}
-	if _, err := OpenService([]byte("junk"), WithMachineKeys(key), Options{Audit: audit.Discard}); !errors.Is(err, ErrTampered) {
+	if _, err := OpenService([]byte("junk"), WithMachineKeys(key), Options{Audit: audit.Discard}); !errors.Is(err, ErrNotVault) {
 		t.Errorf("junk: %v", err)
 	}
 }
@@ -1509,4 +1519,18 @@ func TestConcurrentGuardAndCommitHasNoRace(t *testing.T) {
 		put(t, v, "a", "2")
 	}
 	wg.Wait()
+}
+
+func FuzzUnpad(f *testing.F) {
+	f.Add(pad([]byte("value")))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		out, err := unpad(b)
+		if err != nil {
+			return
+		}
+		if !bytes.Equal(pad(out), b) {
+			t.Fatal("a non-canonical padding was accepted")
+		}
+	})
 }
