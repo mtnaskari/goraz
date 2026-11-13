@@ -193,3 +193,42 @@ func TestConcurrentPinsKeepHighest(t *testing.T) {
 		t.Errorf("high = %d", r.High)
 	}
 }
+
+func FuzzParseRecord(f *testing.F) {
+	key := bytes.Repeat([]byte{1}, 32)
+	s := &File{Dir: f.TempDir()}
+	if _, err := s.Pin([16]byte{1}, key, 3, h(3)); err != nil {
+		f.Fatal(err)
+	}
+	good, err := os.ReadFile(s.path([16]byte{1})) // #nosec G304 -- test path.
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(good)
+	f.Add([]byte("{}"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		r, err := parseRecord(b, [16]byte{1}, key)
+		if err == nil && !bytes.Equal(b, good) && r.High != 3 {
+			t.Fatalf("a forged record was accepted: %+v", r)
+		}
+	})
+}
+
+// Whatever the inputs, a file older than the highest generation seen is never
+// accepted unless it is exactly the pinned file.
+func FuzzDecide(f *testing.F) {
+	f.Add(uint64(5), uint64(5), byte(5), uint64(6), byte(6), uint64(5), byte(5))
+	f.Fuzz(func(t *testing.T, high, pinGen uint64, pinHash byte, gen uint64, hash byte, linGen uint64, linHash byte) {
+		if pinGen > high {
+			pinGen = high
+		}
+		r := &Record{High: high, PinnedGen: pinGen, PinnedHash: h(pinHash)}
+		d := Decide(r, gen, h(hash), []Lineage{l(linGen, linHash)})
+		if gen < high && hash != pinHash && d != Rollback {
+			t.Fatalf("older file not refused: %d", d)
+		}
+		if gen == pinGen && hash != pinHash && gen >= high && d == Accept {
+			t.Fatal("a different file at the pinned generation was accepted")
+		}
+	})
+}

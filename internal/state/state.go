@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -72,7 +73,7 @@ func Decide(r *Record, gen uint64, hash [32]byte, lineage []Lineage) Decision {
 			oldest = l.Generation
 		}
 		if l.Generation == r.PinnedGen {
-			if bytes.Equal(l.SHA256, r.PinnedHash[:]) {
+			if subtle.ConstantTimeCompare(l.SHA256, r.PinnedHash[:]) == 1 {
 				return Accept
 			}
 			return Fork
@@ -185,6 +186,11 @@ func (s *File) read(id [16]byte, key []byte) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseRecord(b, id, key)
+}
+
+// parseRecord decodes and authenticates a state file's contents.
+func parseRecord(b []byte, id [16]byte, key []byte) (*Record, error) {
 	var f fileRecord
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
