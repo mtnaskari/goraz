@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func testKeys() Keys {
@@ -447,4 +449,100 @@ func FuzzVerifyBytes(f *testing.F) {
 			t.Fatalf("accepted %q (%+v)", data, r)
 		}
 	})
+}
+
+// The hand-built JSON must match what encoding/json produces.
+func TestJSONSinkMatchesEncodingJSON(t *testing.T) {
+	when := time.Date(2026, 11, 13, 1, 2, 3, 456000000, time.UTC)
+	for _, e := range []Event{
+		ev(),
+		{Type: EventVaultOpen, Outcome: Denied, Actor: ActorSystem},
+	} {
+		var b bytes.Buffer
+		s := NewJSONSink(&b)
+		s.now = func() time.Time { return when }
+		if err := s.Record(e); err != nil {
+			t.Fatal(err)
+		}
+		type jsonEvent struct {
+			Time    time.Time `json:"time"`
+			Event   EventType `json:"event"`
+			Outcome Outcome   `json:"outcome"`
+			Actor   Actor     `json:"actor"`
+			Object  string    `json:"object,omitempty"`
+		}
+		want, err := json.Marshal(jsonEvent{Time: when, Event: e.Type, Outcome: e.Outcome, Actor: e.Actor, Object: hex.EncodeToString(e.Object)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.String() != string(want)+"\n" {
+			t.Errorf("got  %s\nwant %s", b.String(), want)
+		}
+	}
+}
+
+// Appends from another process must still be verified when this process continues
+// from its cached position.
+func TestIncrementalVerifyChecksOtherAppends(t *testing.T) {
+	l, p := newLog(t)
+	for range 3 {
+		if err := l.Record(ev()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := OpenLog(p, LogOptions{Keys: testKeys(), Anchor: l.Head()})
+	if err := other.Record(ev()); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(ev()); err != nil {
+		t.Fatalf("continuing after another process: %v", err)
+	}
+	if _, err := Verify(p, testKeys(), l.Head()); err != nil {
+		t.Fatal(err)
+	}
+	// A forged line appended by someone without the key must be caught.
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- test path.
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"seq":7,"ts":1,"key_id":1,"event":"item.read","outcome":"ok","actor":"system","object":"","prev":"","mac":"00"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(ev()); !errors.Is(err, ErrTampered) {
+		t.Errorf("forged append: %v", err)
+	}
+}
+
+func TestIncrementalVerifyNoticesRewrittenTail(t *testing.T) {
+	l, p := newLog(t)
+	for range 3 {
+		if err := l.Record(ev()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := os.ReadFile(p) // #nosec G304 -- test path.
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := bytes.LastIndex(b, []byte(`"outcome":"ok"`))
+	tail := bytes.Clone(b)
+	copy(tail[i:], `"outcome":"no"`)
+	if err := os.WriteFile(p, tail, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(ev()); !errors.Is(err, ErrTampered) {
+		t.Errorf("rewritten tail: %v", err)
+	}
+	// An edit to an earlier line is found by the full check, which every new Log
+	// and every audit verify runs.
+	if err := os.WriteFile(p, bytes.Replace(b, []byte(`"outcome":"ok"`), []byte(`"outcome":"no"`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := OpenLog(p, LogOptions{Keys: testKeys()})
+	if err := fresh.Record(ev()); !errors.Is(err, ErrTampered) {
+		t.Errorf("earlier line: %v", err)
+	}
 }

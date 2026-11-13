@@ -108,14 +108,32 @@ type Result struct {
 	FirstSeq uint64
 }
 
+// chainState is the last verified position of a chain.
+type chainState struct {
+	seq   uint64
+	mac   []byte
+	keyID uint32
+}
+
 // verifyBytes checks a whole log: every MAC, contiguous sequence numbers, the
 // chain, and key IDs that never go backwards. A log may begin only at sequence 1
 // or with a recorded gap.
 func verifyBytes(data []byte, keys Keys) (*Result, []*line, error) {
+	return verifyFrom(data, keys, nil)
+}
+
+// verifyFrom checks lines that continue from a verified position, or a whole log
+// when from is nil.
+func verifyFrom(data []byte, keys Keys, from *chainState) (*Result, []*line, error) {
 	r := &Result{}
 	var entries []*line
 	var prevMAC []byte
 	var keyID uint32
+	var lastSeq uint64
+	started := from != nil
+	if started {
+		prevMAC, keyID, lastSeq = from.mac, from.keyID, from.seq
+	}
 	for len(data) > 0 {
 		i := bytes.IndexByte(data, '\n')
 		if i < 0 {
@@ -142,7 +160,7 @@ func verifyBytes(data []byte, keys Keys) (*Result, []*line, error) {
 		if err != nil {
 			return nil, nil, ErrTampered
 		}
-		if len(entries) == 0 {
+		if !started {
 			r.FirstSeq = l.Seq
 			switch {
 			case l.Event == EventAuditGap:
@@ -153,18 +171,16 @@ func verifyBytes(data []byte, keys Keys) (*Result, []*line, error) {
 			if len(prev) != 0 {
 				return nil, nil, ErrTampered
 			}
-		} else {
-			if l.Seq != entries[len(entries)-1].Seq+1 || !hmac.Equal(prev, prevMAC) || l.KeyID < keyID {
-				return nil, nil, ErrTampered
-			}
+			started = true
+		} else if l.Seq != lastSeq+1 || !hmac.Equal(prev, prevMAC) || l.KeyID < keyID {
+			return nil, nil, ErrTampered
 		}
-		keyID = l.KeyID
-		prevMAC = got
+		keyID, prevMAC, lastSeq = l.KeyID, got, l.Seq
 		entries = append(entries, l)
 	}
 	r.Entries = len(entries)
 	if len(entries) > 0 {
-		r.Head = Anchor{Seq: entries[len(entries)-1].Seq, MAC: prevMAC}
+		r.Head = Anchor{Seq: lastSeq, MAC: prevMAC}
 	}
 	return r, entries, nil
 }
@@ -253,6 +269,13 @@ type Log struct {
 	head      Anchor
 	acceptGap bool
 	now       func() time.Time
+	// verified remembers how much of the file this process has already checked,
+	// so an append reads only what is new. Another process's appends are still
+	// verified. A full check runs whenever the file doesn't continue as expected.
+	verified *verifiedTail
+	// broken is set after a failed sync. The kernel may have dropped the data, so a
+	// later success would prove nothing, and the log refuses further appends.
+	broken error
 	// Guard runs under the log lock before each append. The vault uses it to
 	// refuse appending under a stale key after the file has changed.
 	Guard func() error
@@ -280,6 +303,7 @@ func (l *Log) SetKeys(k Keys) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.keys = k
+	l.verified = nil
 }
 
 // Head returns the position of the last entry appended by this process, or the
@@ -288,6 +312,43 @@ func (l *Log) Head() Anchor {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.head
+}
+
+type verifiedTail struct {
+	size  int64
+	last  []byte // The last line, including its newline.
+	state chainState
+}
+
+// readContinuation returns the bytes appended since the cached position, or false
+// if the file doesn't continue the verified tail exactly.
+func (l *Log) readContinuation() ([]byte, bool) {
+	c := l.verified
+	if c == nil {
+		return nil, false
+	}
+	f, err := os.Open(l.path) // #nosec G304 -- the log path, checked by fsutil on every write.
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = f.Close() }()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Size() < c.size {
+		return nil, false
+	}
+	start := c.size - int64(len(c.last))
+	buf := make([]byte, st.Size()-start)
+	if _, err := f.ReadAt(buf, start); err != nil {
+		return nil, false
+	}
+	if !bytes.Equal(buf[:len(c.last)], c.last) { //nolint:forbidigo // public: log lines hold no secrets.
+		return nil, false
+	}
+	rest := buf[len(c.last):]
+	if len(rest) > 0 && rest[len(rest)-1] != '\n' {
+		return nil, false
+	}
+	return rest, true
 }
 
 // Record implements Sink. It holds an exclusive lock across reading the tail,
@@ -299,6 +360,9 @@ func (l *Log) Record(e Event) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.broken != nil {
+		return fmt.Errorf("%w: an earlier write failed: %w", ErrUnavailable, l.broken)
+	}
 
 	if err := fsutil.EnsurePrivateDir(filepath.Dir(l.path)); err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -316,6 +380,16 @@ func (l *Log) Record(e Event) error {
 			return err
 		}
 	}
+	if rest, ok := l.readContinuation(); ok {
+		if r, _, err := verifyFrom(rest, l.keys, &l.verified.state); err == nil {
+			state := l.verified.state
+			if r.Entries > 0 {
+				state = chainState{seq: r.Head.Seq, mac: r.Head.MAC, keyID: lastKeyID(rest)}
+			}
+			return l.append(e, state.mac, state.seq+1, false)
+		}
+	}
+	l.verified = nil
 	data, err := fsutil.ReadFile(l.path, maxLogSize, fsutil.Policy{})
 	if errors.Is(err, fs.ErrNotExist) {
 		data = nil
@@ -358,6 +432,23 @@ func (l *Log) Record(e Event) error {
 		prev = r.Head.MAC
 		seq = r.Head.Seq + 1
 	}
+	return l.append(e, prev, seq, gap)
+}
+
+// lastKeyID returns the key ID of the last line in verified data.
+func lastKeyID(data []byte) uint32 {
+	trimmed := bytes.TrimSuffix(data, []byte("\n"))
+	i := bytes.LastIndexByte(trimmed, '\n')
+	l, err := parseLine(trimmed[i+1:])
+	if err != nil {
+		return 0
+	}
+	return l.KeyID
+}
+
+// append writes the next entry, and a gap entry before it if asked. The caller
+// holds the lock and has verified the chain up to prev.
+func (l *Log) append(e Event, prev []byte, seq uint64, gap bool) error {
 	key, ok := l.keys.All[l.keys.Active]
 	if !ok {
 		return ErrUnavailable
@@ -388,11 +479,17 @@ func (l *Log) Record(e Event) error {
 	}
 	buf = append(buf, out...)
 	if err := appendSync(l.path, buf); err != nil {
+		if errors.Is(err, errSyncFailed) {
+			l.broken = err
+		}
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	l.head = Anchor{Seq: seq, MAC: m}
 	l.acceptGap = false
 	l.anchor = l.head
+	if st, err := os.Stat(l.path); err == nil {
+		l.verified = &verifiedTail{size: st.Size(), last: bytes.Clone(out), state: chainState{seq: seq, mac: m, keyID: l.keys.Active}}
+	}
 	return nil
 }
 
@@ -409,7 +506,13 @@ func encode(n *line, key []byte) ([]byte, []byte, error) {
 	return append(b, '\n'), m, nil
 }
 
+var errSyncFailed = errors.New("audit: fsync failed")
+
+// appendSync appends b and syncs it. A new file's directory is synced too, so the
+// file can't vanish after the manifest has stored an anchor to it.
 func appendSync(path string, b []byte) error {
+	_, statErr := os.Lstat(path)
+	created := errors.Is(statErr, fs.ErrNotExist)
 	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_APPEND|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return err
@@ -424,5 +527,14 @@ func appendSync(path string, b []byte) error {
 		_ = f.Truncate(st.Size()) // Don't leave a partial line behind.
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		_ = f.Truncate(st.Size())
+		return fmt.Errorf("%w: %w", errSyncFailed, err)
+	}
+	if created {
+		if err := fsutil.SyncDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("%w: %w", errSyncFailed, err)
+		}
+	}
+	return nil
 }

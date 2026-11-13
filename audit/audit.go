@@ -7,7 +7,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -86,23 +85,26 @@ type Event struct {
 	Object []byte
 }
 
+// ErrInvalidEvent means an event is outside the closed lists.
+var ErrInvalidEvent = errors.New("audit: invalid event")
+
 // Validate refuses anything outside the closed lists.
 func (e Event) Validate() error {
 	if !knownEvents[e.Type] {
-		return errors.New("audit: unknown event type")
+		return fmt.Errorf("%w: unknown event type", ErrInvalidEvent)
 	}
 	switch e.Outcome {
 	case OK, Denied, Failed:
 	default:
-		return errors.New("audit: unknown outcome")
+		return fmt.Errorf("%w: unknown outcome", ErrInvalidEvent)
 	}
 	switch e.Actor {
 	case ActorPassphrase, ActorRecovery, ActorMachine, ActorToken, ActorSystem:
 	default:
-		return errors.New("audit: unknown actor")
+		return fmt.Errorf("%w: unknown actor", ErrInvalidEvent)
 	}
 	if len(e.Object) > MaxObjectSize {
-		return errors.New("audit: object is too long")
+		return fmt.Errorf("%w: object is too long", ErrInvalidEvent)
 	}
 	return nil
 }
@@ -135,34 +137,40 @@ type JSONSink struct {
 	mu  sync.Mutex
 	w   io.Writer
 	now func() time.Time
+	buf []byte // Reused under mu. Events hold no secrets, only names from closed lists and an HMAC or ID.
 }
 
 // NewJSONSink returns a sink writing to w.
 func NewJSONSink(w io.Writer) *JSONSink { return &JSONSink{w: w, now: time.Now} }
 
-type jsonEvent struct {
-	Time    time.Time `json:"time"`
-	Event   EventType `json:"event"`
-	Outcome Outcome   `json:"outcome"`
-	Actor   Actor     `json:"actor"`
-	Object  string    `json:"object,omitempty"`
-}
-
-// Record implements Sink.
+// Record implements Sink. It writes the same JSON as encoding/json would, built by
+// hand so that the hot path doesn't allocate. Event names, outcomes and actors come
+// from closed lists of plain ASCII, so they need no escaping.
 func (s *JSONSink) Record(e Event) error {
 	if err := e.Validate(); err != nil {
 		return err
 	}
-	b, err := json.Marshal(jsonEvent{
-		Time: s.now().UTC(), Event: e.Type, Outcome: e.Outcome, Actor: e.Actor,
-		Object: hex.EncodeToString(e.Object),
-	})
-	if err != nil {
-		return err
-	}
+	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.w.Write(append(b, '\n')); err != nil {
+	b := s.buf[:0]
+	b = append(b, `{"time":"`...)
+	b = now.AppendFormat(b, time.RFC3339Nano)
+	b = append(b, `","event":"`...)
+	b = append(b, e.Type...)
+	b = append(b, `","outcome":"`...)
+	b = append(b, e.Outcome...)
+	b = append(b, `","actor":"`...)
+	b = append(b, e.Actor...)
+	b = append(b, '"')
+	if len(e.Object) > 0 {
+		b = append(b, `,"object":"`...)
+		b = hex.AppendEncode(b, e.Object)
+		b = append(b, '"')
+	}
+	b = append(b, "}\n"...)
+	s.buf = b
+	if _, err := s.w.Write(b); err != nil {
 		return fmt.Errorf("audit: writing event: %w", err)
 	}
 	return nil
