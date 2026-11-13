@@ -51,7 +51,7 @@ goraz run --env DB_PASSWORD=goraz://prod/db/password -- ./my-app
 | Fix an error | [Troubleshooting](docs/guides/troubleshooting.md) |
 | Compare it with Vault, OpenBao, SOPS or gopass | [Comparison](docs/guides/alternatives.md) |
 
-The [documentation site](https://mtnaskari.github.io/goraz/) has everything, including the [command reference](docs/cli-reference.md), [limits](docs/limits.md), [threat model](docs/threat-model.md) and [file format](docs/security-design.md).
+The [documentation site](https://mtnaskari.github.io/goraz/) has everything, including the [command reference](docs/cli-reference.md), [limits](docs/limits.md), [threat model](docs/threat-model.md) and [file format](docs/security-design.md). What changed in each release is in the [changelog](CHANGELOG.md).
 
 ## Read a token in a Go service
 

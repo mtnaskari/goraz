@@ -31,7 +31,7 @@ Secrets are read from a hidden prompt, stdin or a file descriptor. They are neve
 
 | Command | What it does |
 |---|---|
-| `init [--kdf PROFILE] [--generate-passphrase]` | Create a vault. Profiles: `interactive`, `standard`, `strong` (default), `max` |
+| `init [--kdf PROFILE] [--generate-passphrase] [--accept-weak-passphrase]` | Create a vault. Profiles: `interactive`, `standard`, `strong` (default), `max`. The last flag skips the passphrase policy, with a warning |
 | `put NAME [--type T] [--username U] [--url U] [--notes N] [--expires-in D] [--generate N] [--otp]` | Store a new version. Types: `secret`, `login`, `token`, `totp` |
 | `get NAME [--version N] [--force]` | Print a value. Refuses a terminal unless forced |
 | `read goraz://NAME[#FIELD] [--force]` | Print a field: `value`, `username`, `url`, `notes` or `otp` |
@@ -48,7 +48,7 @@ Secrets are read from a hidden prompt, stdin or a file descriptor. They are neve
 
 | Command | What it does |
 |---|---|
-| `passwd [--kdf P] [--new-passphrase-fd N]` | Replace the passphrase. **Doesn't revoke the old one** |
+| `passwd [--kdf P] [--new-passphrase-fd N] [--accept-weak-passphrase]` | Replace the passphrase. **Doesn't revoke the old one** |
 | `slot list` | List unlock slots |
 | `slot add-machine`, `slot add-recovery` | Add a credential. A machine key opens the whole vault |
 | `slot remove ID` | Remove a slot. **Doesn't revoke it** |
