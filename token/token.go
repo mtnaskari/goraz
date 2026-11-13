@@ -4,16 +4,19 @@
 package token
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mtnaskari/goraz/audit"
 	"github.com/mtnaskari/goraz/internal/envelope"
@@ -29,6 +32,8 @@ var (
 	ErrUnavailable  = errors.New("token: the token store is unavailable")
 	ErrNotFound     = errors.New("token: not found")
 	ErrReadOnly     = errors.New("token: this store is read-only")
+	// ErrInvalidArgument means a configuration or request is wrong.
+	ErrInvalidArgument = errors.New("token: invalid argument")
 )
 
 // Lifetime limits.
@@ -39,7 +44,16 @@ const (
 
 // ID is a token's public identifier. It can list and revoke a token but can't
 // authenticate as it.
-type ID [tokfmt.IDSize]byte
+type ID [IDSize]byte
+
+// IDSize is the size of a token ID.
+const IDSize = 16
+
+// Both differences must be non-negative, so the build fails if the sizes differ.
+const (
+	_ uint = IDSize - tokfmt.IDSize
+	_ uint = tokfmt.IDSize - IDSize
+)
 
 // Key is a verifier key. A key past RetireAt no longer verifies anything.
 type Key struct {
@@ -100,25 +114,25 @@ type Manager struct {
 // New returns a Manager.
 func New(c Config) (*Manager, error) {
 	if c.Store == nil {
-		return nil, errors.New("token: a store is required")
+		return nil, fmt.Errorf("%w: a store is required", ErrInvalidArgument)
 	}
 	if c.Sink == nil {
-		return nil, errors.New("token: an audit sink is required; use audit.Discard to opt out")
+		return nil, fmt.Errorf("%w: an audit sink is required; use audit.Discard to opt out", ErrInvalidArgument)
 	}
 	if len(c.Keys) == 0 {
-		return nil, errors.New("token: at least one verifier key is required")
+		return nil, fmt.Errorf("%w: at least one verifier key is required", ErrInvalidArgument)
 	}
 	for _, k := range c.Keys {
 		if len(k.Key) != 32 {
-			return nil, errors.New("token: verifier keys must be 32 bytes")
+			return nil, fmt.Errorf("%w: verifier keys must be 32 bytes", ErrInvalidArgument)
 		}
 	}
-	m := &Manager{keys: c.Keys, store: c.Store, sink: c.Sink, prefix: c.Prefix, now: c.Now, maxTTL: c.MaxTTL}
+	m := &Manager{keys: copyKeys(c.Keys), store: c.Store, sink: c.Sink, prefix: c.Prefix, now: c.Now, maxTTL: c.MaxTTL}
 	if m.prefix == "" {
 		m.prefix = tokfmt.DefaultPrefix
 	}
 	if !tokfmt.ValidPrefix(m.prefix) {
-		return nil, errors.New("token: a prefix must match [a-z]{2,10}")
+		return nil, fmt.Errorf("%w: a prefix must match [a-z]{2,10}", ErrInvalidArgument)
 	}
 	if m.now == nil {
 		m.now = time.Now
@@ -213,20 +227,20 @@ func (m *Manager) Issue(ctx context.Context, q IssueRequest) (secret.Secret, Rec
 		q.TTL = DefaultTTL
 	}
 	if q.TTL < 0 || q.TTL > m.maxTTL {
-		return secret.Secret{}, Record{}, errors.New("token: TTL is outside the allowed range")
+		return secret.Secret{}, Record{}, fmt.Errorf("%w: TTL is outside the allowed range", ErrInvalidArgument)
 	}
-	if q.Name == "" || len(q.Name) > 128 {
-		return secret.Secret{}, Record{}, errors.New("token: a name of up to 128 bytes is required")
+	if q.Name == "" || len(q.Name) > 128 || strings.ContainsFunc(q.Name, unicode.IsControl) {
+		return secret.Secret{}, Record{}, fmt.Errorf("%w: a name of up to 128 bytes is required", ErrInvalidArgument)
 	}
 	for _, s := range q.Scopes {
 		if !validScope(s) {
-			return secret.Secret{}, Record{}, errors.New("token: invalid scope")
+			return secret.Secret{}, Record{}, fmt.Errorf("%w: invalid scope", ErrInvalidArgument)
 		}
 	}
 	now := m.now().UTC().Truncate(time.Second)
 	key, ok := m.activeKey()
 	if !ok {
-		return secret.Secret{}, Record{}, errors.New("token: no active verifier key")
+		return secret.Secret{}, Record{}, fmt.Errorf("%w: no active verifier key", ErrInvalidArgument)
 	}
 	var id [tokfmt.IDSize]byte
 	var sec [tokfmt.SecretSize]byte
@@ -343,11 +357,11 @@ func (m *Manager) Rotate(ctx context.Context, id ID, overlap time.Duration) (sec
 		return secret.Secret{}, Record{}, err
 	}
 	if overlap < 0 {
-		return secret.Secret{}, Record{}, errors.New("token: overlap can't be negative")
+		return secret.Secret{}, Record{}, fmt.Errorf("%w: overlap can't be negative", ErrInvalidArgument)
 	}
 	now := m.now().UTC()
 	if old.Revoked || !now.Before(old.Expires) || (old.RevokeAt != nil && !now.Before(*old.RevokeAt)) {
-		return secret.Secret{}, Record{}, errors.New("token: a revoked or expired token can't be rotated")
+		return secret.Secret{}, Record{}, fmt.Errorf("%w: a revoked or expired token can't be rotated", ErrInvalidArgument)
 	}
 	tok, rec, err := m.Issue(ctx, IssueRequest{Name: old.Name, Scopes: old.Scopes, TTL: old.Expires.Sub(old.Issued)})
 	if err != nil {
@@ -380,6 +394,39 @@ func ParseID(b []byte) (ID, bool) {
 	return id, true
 }
 
+// copyKeys copies keys, so a caller's later change can't alter a Manager.
+func copyKeys(in []Key) []Key {
+	out := make([]Key, len(in))
+	for i, k := range in {
+		k.Key = bytes.Clone(k.Key)
+		if k.RetireAt != nil {
+			at := *k.RetireAt
+			k.RetireAt = &at
+		}
+		out[i] = k
+	}
+	return out
+}
+
+// Clone returns a deep copy of a record.
+func (r Record) Clone() Record {
+	r.ID = bytes.Clone(r.ID)
+	r.Scopes = slices.Clone(r.Scopes)
+	r.MAC = bytes.Clone(r.MAC)
+	r.ReplacedBy = bytes.Clone(r.ReplacedBy)
+	if r.RevokeAt != nil {
+		at := *r.RevokeAt
+		r.RevokeAt = &at
+	}
+	return r
+}
+
+// Compile-time checks that the stores implement Store.
+var (
+	_ Store = (*MemoryStore)(nil)
+	_ Store = (*CachedStore)(nil)
+)
+
 // MemoryStore keeps records in memory. It is meant for tests.
 type MemoryStore struct {
 	mu sync.Mutex
@@ -397,18 +444,18 @@ func (s *MemoryStore) Get(_ context.Context, id ID) (Record, error) {
 	if !ok {
 		return Record{}, ErrNotFound
 	}
-	return r, nil
+	return r.Clone(), nil
 }
 
 // Put implements Store.
 func (s *MemoryStore) Put(_ context.Context, r Record) error {
 	id, ok := ParseID(r.ID)
 	if !ok {
-		return errors.New("token: invalid record ID")
+		return fmt.Errorf("%w: invalid record ID", ErrInvalidArgument)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.m[id] = r
+	s.m[id] = r.Clone()
 	return nil
 }
 
@@ -418,7 +465,7 @@ func (s *MemoryStore) List(context.Context) ([]Record, error) {
 	defer s.mu.Unlock()
 	out := make([]Record, 0, len(s.m))
 	for _, r := range s.m {
-		out = append(out, r)
+		out = append(out, r.Clone())
 	}
 	return out, nil
 }
@@ -434,7 +481,7 @@ type cached struct {
 // CachedStore caches a slow store's records for at most a fixed limit. Past the
 // limit it asks the store again, and a store failure fails closed.
 type CachedStore struct {
-	Store
+	store Store
 	limit time.Duration
 	now   func() time.Time
 	mu    sync.Mutex
@@ -449,7 +496,7 @@ func NewCachedStore(s Store, limit time.Duration, now func() time.Time) *CachedS
 	if now == nil {
 		now = time.Now
 	}
-	return &CachedStore{Store: s, limit: limit, now: now, m: make(map[ID]cached)}
+	return &CachedStore{store: s, limit: limit, now: now, m: make(map[ID]cached)}
 }
 
 // Get implements Store.
@@ -459,9 +506,9 @@ func (c *CachedStore) Get(ctx context.Context, id ID) (Record, error) {
 	e, ok := c.m[id]
 	c.mu.Unlock()
 	if ok && now.Sub(e.fetched) < c.limit {
-		return e.r, nil
+		return e.r.Clone(), nil
 	}
-	r, err := c.Store.Get(ctx, id)
+	r, err := c.store.Get(ctx, id)
 	if err != nil {
 		c.mu.Lock()
 		delete(c.m, id)
@@ -469,14 +516,17 @@ func (c *CachedStore) Get(ctx context.Context, id ID) (Record, error) {
 		return Record{}, err
 	}
 	c.mu.Lock()
-	c.m[id] = cached{r: r, fetched: now}
+	c.m[id] = cached{r: r.Clone(), fetched: now}
 	c.mu.Unlock()
 	return r, nil
 }
 
+// List implements Store. It always asks the underlying store.
+func (c *CachedStore) List(ctx context.Context) ([]Record, error) { return c.store.List(ctx) }
+
 // Put implements Store. It updates this process's view immediately.
 func (c *CachedStore) Put(ctx context.Context, r Record) error {
-	if err := c.Store.Put(ctx, r); err != nil {
+	if err := c.store.Put(ctx, r); err != nil {
 		return err
 	}
 	if id, ok := ParseID(r.ID); ok {
