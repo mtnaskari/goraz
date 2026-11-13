@@ -196,6 +196,9 @@ td code { white-space: nowrap; }
 .site-footer p { margin: 0 0 6px; }
 .site-footer a { color: var(--text-2); text-decoration: none; }
 .site-footer a:hover { color: var(--accent); }
+.made-by { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35em; }
+.home .made-by { justify-content: center; }
+.heart { width: 1em; height: 1em; fill: #e11d48; flex: none; }
 
 /* Home */
 .home main { max-width: 1180px; margin: 0 auto; padding: 0 24px; }

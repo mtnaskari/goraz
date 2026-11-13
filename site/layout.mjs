@@ -89,6 +89,7 @@ function footer({ site }) {
   return `<footer class="site-footer">
   <p>goraz is open source under the <a href="${site.repo}/blob/main/LICENSE">Apache-2.0 license</a>. Copyright 2026 Matin Askari.</p>
   <p><a href="${site.repo}">GitHub</a> · <a href="https://pkg.go.dev/github.com/mtnaskari/goraz">pkg.go.dev</a> · <a href="${site.repo}/releases">Releases</a> · <a href="${site.repo}/issues">Issues</a> · <a href="${site.repo}/blob/main/SECURITY.md">Security</a></p>
+  <p class="made-by">Made with <svg class="heart" viewBox="0 0 16 16" role="img" aria-label="love"><path d="M8 14.2 1.9 8.4A3.7 3.7 0 0 1 7.2 3.2L8 4l.8-.8a3.7 3.7 0 0 1 5.3 5.2Z"/></svg> by <a href="https://www.askari.pro" rel="author">Matin Askari</a></p>
 </footer>`;
 }
 
