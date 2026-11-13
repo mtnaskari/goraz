@@ -166,3 +166,27 @@ func TestProfileByName(t *testing.T) {
 		t.Error("strong not found")
 	}
 }
+
+// Argon2id vectors from the reference implementation's src/test.c (P-H-C/phc-winner-argon2).
+func TestArgon2idReferenceVectors(t *testing.T) {
+	cases := []struct {
+		t, logM, p uint32
+		pass, salt string
+		want       string
+	}{
+		{2, 16, 1, "password", "somesalt", "09316115d5cf24ed5a15a31a3ba326e5cf32edc24702987c02b6566f61913cf7"},
+		{2, 18, 1, "password", "somesalt", "78fe1ec91fb3aa5657d72e710854e4c3d9b9198c742f9616c2f085bed95b2e8c"},
+		{2, 8, 1, "password", "somesalt", "9dfeb910e80bad0311fee20f9c0e2b12c17987b4cac90c2ef54d5b3021c68bfe"},
+		{2, 8, 2, "password", "somesalt", "6d093c501fd5999645e0ea3bf620d7b8be7fd2db59c20d9fff9539da2bf57037"},
+		{1, 16, 1, "password", "somesalt", "f6a5adc1ba723dddef9b5ac1d464e180fcd9dffc9d1cbf76cca2fed795d9ca98"},
+		{4, 16, 1, "password", "somesalt", "9025d48e68ef7395cca9079da4c4ec3affb3c8911fe4f86d1a2520856f63172c"},
+		{2, 16, 1, "differentpassword", "somesalt", "0b84d652cf6b0c4beaef0dfe278ba6a80df6696281d7e0d2891b817d8c458fde"},
+		{2, 16, 1, "password", "diffsalt", "bdf32b05ccc42eb15d58fd19b1f856b113da1e9a5874fdcc544308565aa8141c"},
+	}
+	for _, c := range cases {
+		got := argon2.IDKey([]byte(c.pass), []byte(c.salt), c.t, 1<<c.logM, uint8(c.p), 32) // #nosec G115 -- small test values.
+		if hex.EncodeToString(got) != c.want {
+			t.Errorf("t=%d m=2^%d p=%d %s/%s: got %x", c.t, c.logM, c.p, c.pass, c.salt, got)
+		}
+	}
+}
